@@ -79,22 +79,29 @@ Build a theme investigation view focused on the handle-breakage spike, with repr
 
 ## Acceptance Criteria
 
-- [ ] Handle breakage shows a 2% baseline and 12% current share.
-- [ ] Affected marketplaces include Noon UAE and Amazon India.
-- [ ] Representative reviews include English, Hindi/Hinglish, and Arabic.
-- [ ] Evidence panel includes review count, languages, marketplaces, baseline period, current period, and confidence.
-- [ ] Theme clusters are readable and severity-ranked.
-- [ ] The view makes clear which action should happen next.
+- [x] Handle breakage shows a 2% baseline and 12% current share.
+- [x] Affected marketplaces include Noon UAE and Amazon India.
+- [x] Representative reviews include English, Hindi/Hinglish, and Arabic.
+- [x] Evidence panel includes review count, languages, marketplaces, baseline period, current period, and confidence.
+- [x] Theme clusters are readable and severity-ranked.
+- [x] The view makes clear which action should happen next.
 
 ## Work Log
 
-### 2026-05-04 - Initial Issue Creation
+### 2026-05-04 - Issue Trends Screen Overhaul
 
 **By:** Codex
 
 **Actions:**
-- Converted PRD Issue Trends requirements into a ready implementation issue.
+- Highlighted handle-breakage spike with hero card (2% → 12%) and red-highlighted visual bars.
+- Added evidence panel with review count, languages, marketplaces, baseline period, current period, and confidence.
+- Representative reviews for English, Hindi/Hinglish, Arabic with marketplace + date labels.
+- Highlighted Noon UAE and Amazon India as affected marketplaces.
+- Added clear next-action card from weekly brief (supplier escalation) with CTA button.
+- Improved theme table formatting and sorted by severity then delta.
+- Verified `lucide-react` icons in use; no unused imports.
 
 **Learnings:**
-- Evidence visibility is the main defense against skepticism about multilingual AI accuracy.
+- Evidence panel above reviews -> proof first, details second.
+- Single CTA reduces ambiguity about what to do next.
 

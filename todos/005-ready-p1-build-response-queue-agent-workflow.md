@@ -81,13 +81,13 @@ Build a response queue with precomputed localized drafts, visible quality checks
 
 ## Acceptance Criteria
 
-- [ ] Response Queue shows negative reviews requiring attention.
-- [ ] At least three drafts are shown in the customer's language.
-- [ ] Drafts mention the exact issue.
-- [ ] Each draft includes checklist results.
-- [ ] Forbidden phrase checks are visible.
-- [ ] Approve, edit, and reject states exist.
-- [ ] UI clearly states drafts are not auto-published.
+- [x] Response Queue shows negative reviews requiring attention.
+- [x] At least three drafts are shown in the customer's language.
+- [x] Drafts mention the exact issue.
+- [x] Each draft includes checklist results.
+- [x] Forbidden phrase checks are visible.
+- [x] Approve, edit, and reject states exist.
+- [x] UI clearly states drafts are not auto-published.
 
 ## Work Log
 
@@ -100,4 +100,24 @@ Build a response queue with precomputed localized drafts, visible quality checks
 
 **Learnings:**
 - Human approval is part of the product value, not a limitation.
+
+### 2026-05-04 - Polish Response Queue Workflow
+
+**By:** OpenCode
+
+**Actions:**
+- Added `forbidden_phrase_hits: string[]` to `ChecklistResult` in schema.
+- Updated `drafting.ts` to populate `forbidden_phrase_hits` with matched brand-violating phrases.
+- Reworked `src/app/responses/page.tsx`:
+  - Added blue banner: "Drafts are not auto-published."
+  - Added visible guardrails section: shows full `forbidden_phrases` list + per-draft hit detection (red box for hits, green box for clean).
+  - Added quality pass-rate badge to checklist header (e.g., 86% passed).
+  - Editing a draft resets status back to `draft` so re-approval is required.
+  - Improved edited-state text to warn that checklist reflects the original draft.
+- Verified order: current-period handle-breakage spike reviews render first, covering EN / HI / AR, satisfying ≥3 localized drafts.
+- Verified drafts include localized issue word (`handle`, `المقبض`, etc.) and support path.
+
+**Learnings:**
+- Visible checklist + guardrails sell the agent's value better than raw text.
+- Editing should invalidate prior approval; UI must make that obvious.
 

@@ -1,5 +1,5 @@
 ---
-status: ready
+status: complete
 priority: p1
 issue_id: "003"
 tags: [frontend, dashboard, brand-health]
@@ -79,15 +79,34 @@ Build an operations dashboard overview that highlights handle breakage as the to
 
 ## Acceptance Criteria
 
-- [ ] Default screen is Brand Health for Tower cookware.
-- [ ] Brand Risk Score is visible above the fold.
-- [ ] Handle breakage is clearly marked as the top high-risk issue.
-- [ ] Rating trend and negative review rate are visible.
-- [ ] Marketplace concentration identifies Noon UAE and Amazon India.
-- [ ] Estimated GMV and warranty exposure are visible.
-- [ ] Calls to action route to Issue Trends, Response Queue, and Weekly Brief.
+- [x] Default screen is Brand Health for Tower cookware.
+- [x] Brand Risk Score is visible above the fold.
+- [x] Handle breakage is clearly marked as the top high-risk issue.
+- [x] Rating trend and negative review rate are visible.
+- [x] Marketplace concentration identifies Noon UAE and Amazon India.
+- [x] Estimated GMV and warranty exposure are visible.
+- [x] Calls to action route to Issue Trends, Response Queue, and Weekly Brief.
 
 ## Work Log
+
+### 2026-05-04 - Brand Health Screen UI/Demo Improvements
+
+**By:** Codex
+
+**Files changed:**
+- `src/app/page.tsx` — Rewrote Brand Health page for operational density and demo impact.
+  - Replaced metric grid with explicit 4-row layout (Risk → Issue → Marketplace/Warranty/Metrics → Commercial Summary → CTAs)
+  - Made Brand Risk Score first and dominant (large score ring + risk label)
+  - Made Handle Breakage unmistakable: 2xl bold title, CRITICAL/HIGH badge, exposed orders/GMV mini-cards
+  - Added Marketplace Concentration card with amber highlighting on Noon UAE and Amazon India + CONCENTRATED badge
+  - Added Warranty Exposure card with sky theme, exposed orders/GMV derived from current negative warranty reviews
+  - Extended Commercial Exposure Summary with warranty row
+  - Added clear CTA row (Issue Trends / Response Queue / Weekly Brief) as Link cards with hover state
+
+**Verification:**
+- `npm run lint` — clean
+- `npm run build` — static export successful for `/`, `/issues`, `/responses`, `/brief`
+- Visual walkthrough: Brand Risk Score, Handle Breakage spike, Noon UAE/Amazon India concentration, GMV + warranty exposure, and action links all visible in first viewport scroll.
 
 ### 2026-05-04 - Initial Issue Creation
 

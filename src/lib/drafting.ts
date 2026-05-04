@@ -27,16 +27,19 @@ export function draftResponse(review: Review, themeLabel: string): DraftResponse
 
   const generated = generateText(review, themeLabel, greeting, closing);
 
+  const forbiddenHits = towerBrand.forbidden_phrases.filter((fp) =>
+    generated.toLowerCase().includes(fp.toLowerCase())
+  );
+
   const checklist: ChecklistResult = {
     language_match: checkLanguageMatch(generated, review.language),
     mentions_exact_issue: checkMentionsExactIssue(generated, review.language, themeLabel),
     empathetic_tone: hasEmpathy(generated),
-    avoids_prohibited_claims: !towerBrand.forbidden_phrases.some((fp) =>
-      generated.toLowerCase().includes(fp.toLowerCase())
-    ),
+    avoids_prohibited_claims: forbiddenHits.length === 0,
     includes_support_path: checkSupportPath(generated),
     within_character_limit: generated.length <= charLimit,
     avoids_over_admitting_fault: !hasOverAdmission(generated),
+    forbidden_phrase_hits: forbiddenHits,
   };
 
   return {

@@ -95,6 +95,7 @@ export interface ChecklistResult {
   includes_support_path: boolean;
   within_character_limit: boolean;
   avoids_over_admitting_fault: boolean;
+  forbidden_phrase_hits: string[];
 }
 
 export interface WeeklyBrief {
