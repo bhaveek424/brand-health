@@ -1,0 +1,485 @@
+"use client";
+
+import React, { useState, useCallback } from "react";
+import DashboardLayout from "@/components/DashboardLayout";
+import { parseCsv, ParsedCsv } from "@/lib/workbench/csv-parser";
+import { mapColumns, ColumnMapping } from "@/lib/workbench/column-mapper";
+import { normalizeRows, ValidationError } from "@/lib/workbench/normalizer";
+import { analyzeWorkbench, WorkbenchAnalysis } from "@/lib/workbench/analysis";
+import { generateActionDrafts, ActionDrafts } from "@/lib/workbench/drafting";
+import { generateHandoff, EngineeringHandoff } from "@/lib/workbench/engineering-handoff";
+import { Card, CardHeader, CardBody, Badge, ProgressBar } from "@/components/SharedUI";
+
+export default function WorkbenchPage() {
+  const [step, setStep] = useState<"upload" | "mapping" | "analysis" | "drafts" | "handoff">("upload");
+  const [parsed, setParsed] = useState<ParsedCsv | null>(null);
+  const [mapping, setMapping] = useState<ColumnMapping | null>(null);
+  const [rejected, setRejected] = useState<ValidationError[]>([]);
+  const [analysis, setAnalysis] = useState<WorkbenchAnalysis | null>(null);
+  const [drafts, setDrafts] = useState<ActionDrafts | null>(null);
+  const [handoff, setHandoff] = useState<EngineeringHandoff | null>(null);
+  const [error, setError] = useState<string>("");
+
+  const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setError("Only .csv files accepted.");
+      return;
+    }
+    setError("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result ?? "");
+      const p = parseCsv(text);
+      if (p.headers.length === 0) {
+        setError("CSV appears empty or missing header row.");
+        return;
+      }
+      setParsed(p);
+      const m = mapColumns(p.headers);
+      setMapping(m);
+      setStep("mapping");
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const acceptMapping = useCallback(() => {
+    if (!parsed || !mapping) return;
+    if (mapping.missing.length > 0) {
+      setError(`Missing required columns: ${mapping.missing.join(", ")}`);
+      return;
+    }
+    setError("");
+    const { accepted: a, rejected: r } = normalizeRows(parsed.rows, mapping);
+    setRejected(r);
+    if (a.length === 0) {
+      setError("All rows were rejected. Fix the issues below before proceeding.");
+      return;
+    }
+    const ana = analyzeWorkbench(a);
+    setAnalysis(ana);
+    const dr = generateActionDrafts(a, ana);
+    setDrafts(dr);
+    const h = generateHandoff(parsed.headers, mapping, a, r, parsed.rows.length);
+    setHandoff(h);
+    setStep("analysis");
+  }, [parsed, mapping]);
+
+  const reset = useCallback(() => {
+    setParsed(null);
+    setMapping(null);
+    setRejected([]);
+    setAnalysis(null);
+    setDrafts(null);
+    setHandoff(null);
+    setError("");
+    setStep("upload");
+  }, []);
+
+  const previewHeaders = parsed ? parsed.headers.slice(0, 5) : [];
+  const previewRows = parsed ? parsed.rows.slice(0, 5) : [];
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+
+        {error && (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+        )}
+
+        {step === "upload" && (
+          <Card>
+            <CardHeader title="Upload Review CSV" />
+            <CardBody>
+              <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:bg-slate-50">
+                <span className="text-sm text-slate-600">Click or drop a .csv review export</span>
+                <span className="text-xs text-slate-400 mt-1">Required: marketplace, market, product_name, sku, rating, review, date, language</span>
+                <input type="file" accept=".csv" className="hidden" onChange={onFileChange} />
+              </label>
+            </CardBody>
+          </Card>
+        )}
+
+        {step === "mapping" && parsed && mapping && (
+          <div className="space-y-4">
+            <Card>
+              <CardHeader title="Column Mapping & Validation" action={<Badge variant="info">{parsed.rows.length} rows</Badge>} />
+              <CardBody>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  {Object.entries(mapping.mapped).map(([field, header]) => (
+                    <div key={field} className="flex items-center justify-between px-3 py-2 bg-emerald-50 border border-emerald-200 rounded">
+                      <span className="text-emerald-800 font-medium">{field}</span>
+                      <span className="text-emerald-700">→ {header}</span>
+                    </div>
+                  ))}
+                  {mapping.unmapped.map((h) => (
+                    <div key={h} className="flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200 rounded">
+                      <span className="text-slate-500">{h}</span>
+                      <Badge variant="neutral">unmapped</Badge>
+                    </div>
+                  ))}
+                </div>
+                {mapping.missing.length > 0 && (
+                  <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    Missing required columns: {mapping.missing.join(", ")}
+                  </div>
+                )}
+                <div className="mt-4 flex gap-2">
+                  <button onClick={acceptMapping} className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700">
+                    Run Analysis
+                  </button>
+                  <button onClick={reset} className="px-4 py-2 text-sm font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+                    Cancel
+                  </button>
+                </div>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Preview (first 5 rows)" />
+              <CardBody>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200">
+                        {previewHeaders.map((h) => (
+                          <th key={h} className="px-2 py-1 text-left font-semibold text-slate-600">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewRows.map((row, i) => (
+                        <tr key={i} className="border-b border-slate-100">
+                          {previewHeaders.map((h) => (
+                            <td key={h} className="px-2 py-1 text-slate-700 truncate max-w-[12rem]">{row[h] ?? ""}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardBody>
+            </Card>
+          </div>
+        )}
+
+        {step === "analysis" && analysis && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-4 gap-4">
+              <Card className="p-4">
+                <div className="text-xs text-slate-500">Total Rows</div>
+                <div className="text-xl font-bold text-slate-800">{analysis.total}</div>
+              </Card>
+              <Card className="p-4">
+                <div className="text-xs text-slate-500">Accepted</div>
+                <div className="text-xl font-bold text-emerald-700">{analysis.accepted}</div>
+              </Card>
+              <Card className="p-4">
+                <div className="text-xs text-slate-500">Rejected</div>
+                <div className="text-xl font-bold text-red-700">{rejected.length}</div>
+              </Card>
+              <Card className="p-4">
+                <div className="text-xs text-slate-500">Avg Rating</div>
+                <div className="text-xl font-bold text-slate-800">
+                  {(Object.entries(analysis.ratingDistribution).reduce((sum, [k, v]) => sum + Number(k) * v, 0) / Math.max(1, analysis.total)).toFixed(1)}
+                </div>
+              </Card>
+            </div>
+
+            {rejected.length > 0 && (
+              <Card>
+                <CardHeader title="Validation Errors" />
+                <CardBody>
+                  <ul className="text-sm space-y-1">
+                    {rejected.slice(0, 10).map((err, i) => (
+                      <li key={i} className="text-red-700">
+                        Row {err.rowIndex + 1}, <span className="font-medium">{err.field}</span>: {err.message}
+                      </li>
+                    ))}
+                    {rejected.length > 10 && (
+                      <li className="text-slate-500">...and {rejected.length - 10} more</li>
+                    )}
+                  </ul>
+                </CardBody>
+              </Card>
+            )}
+
+            <Card>
+              <CardHeader title="Sentiment Split" />
+              <CardBody>
+                <div className="space-y-2">
+                  {Object.entries(analysis.sentimentSplit).map(([key, count]) => {
+                    const pct = analysis.total > 0 ? (count / analysis.total) * 100 : 0;
+                    const color = key === "positive" ? "bg-emerald-500" : key === "negative" ? "bg-red-500" : "bg-amber-500";
+                    return (
+                      <div key={key}>
+                        <div className="flex justify-between text-xs text-slate-600 mb-0.5">
+                          <span className="capitalize">{key}</span>
+                          <span>{count} ({Math.round(pct)}%)</span>
+                        </div>
+                        <ProgressBar value={pct} max={100} color={color} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Rating Distribution" />
+              <CardBody>
+                <div className="space-y-2">
+                  {[5, 4, 3, 2, 1].map((star) => {
+                    const count = analysis.ratingDistribution[star] ?? 0;
+                    const pct = analysis.total > 0 ? (count / analysis.total) * 100 : 0;
+                    return (
+                      <div key={star}>
+                        <div className="flex justify-between text-xs text-slate-600 mb-0.5">
+                          <span>{star} star</span>
+                          <span>{count}</span>
+                        </div>
+                        <ProgressBar value={pct} max={100} color={star <= 2 ? "bg-red-500" : star === 3 ? "bg-amber-500" : "bg-emerald-500"} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Top Issue Themes" />
+              <CardBody>
+                {analysis.topThemes.length === 0 ? (
+                  <p className="text-sm text-slate-500">No themes detected.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {analysis.topThemes.map((t) => (
+                      <div key={t.label} className="border border-slate-100 rounded p-3">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-semibold text-slate-800">{t.label}</div>
+                          <Badge variant={t.severity === "critical" ? "danger" : t.severity === "high" ? "warning" : "neutral"}>{t.severity}</Badge>
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1">{t.count} mentions ({Math.round(t.share * 100)}%)</div>
+                        {t.evidence.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {t.evidence.map((e, idx) => (
+                              <div key={idx} className="text-xs text-slate-600 bg-slate-50 rounded px-2 py-1">“{e}…”</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Top Risks" />
+              <CardBody>
+                {analysis.topRisks.length === 0 ? (
+                  <p className="text-sm text-slate-500">No risks flagged.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {analysis.topRisks.map((r, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm">
+                        <Badge variant={r.severity === "critical" ? "danger" : r.severity === "high" ? "warning" : "neutral"}>{r.severity}</Badge>
+                        <span className="text-slate-700">{r.title}: {r.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardBody>
+            </Card>
+
+            <div className="flex gap-2">
+              <button onClick={() => setStep("drafts")} className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700">
+                View Action Drafts
+              </button>
+              <button onClick={() => setStep("handoff")} className="px-4 py-2 text-sm font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+                Engineering Handoff
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "drafts" && drafts && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setStep("analysis")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Back to Analysis</button>
+              <button onClick={() => setStep("handoff")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Engineering Handoff</button>
+            </div>
+
+            <Card>
+              <CardHeader title="Customer Reply Drafts" />
+              <CardBody>
+                {drafts.customerReplies.length === 0 ? (
+                  <p className="text-sm text-slate-500">No negative reviews to draft replies for.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {drafts.customerReplies.map((d, i) => (
+                      <div key={i} className="border border-slate-100 rounded p-3">
+                        <div className="text-xs text-slate-500 mb-1">SKU: {d.sku}</div>
+                        <div className="text-sm text-slate-700">{d.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Supplier Escalation Note" />
+              <CardBody>
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 rounded p-3">{drafts.supplierNote}</pre>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Slack Summary" />
+              <CardBody>
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 rounded p-3">{drafts.slackSummary}</pre>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Listing Recommendations" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {drafts.listingRecommendations.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Action Brief" />
+              <CardBody>
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 rounded p-3">{drafts.actionBrief}</pre>
+              </CardBody>
+            </Card>
+          </div>
+        )}
+
+        {step === "handoff" && handoff && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setStep("analysis")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Back to Analysis</button>
+              <button onClick={() => setStep("drafts")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Action Drafts</button>
+            </div>
+
+            <Card>
+              <CardHeader title="Observed Upload Data" />
+              <CardBody>
+                <div className="text-sm text-slate-700 space-y-2">
+                  <div><span className="font-semibold">Total uploaded rows:</span> {handoff.observedData.totalUploadedRows}</div>
+                  <div><span className="font-semibold">Accepted rows:</span> {handoff.observedData.acceptedRows}</div>
+                  <div><span className="font-semibold">Rejected rows:</span> {handoff.observedData.rejectedRows}</div>
+                  <div><span className="font-semibold">Markets seen:</span> {handoff.observedData.marketsSeen.join(", ") || "n/a"}</div>
+                  <div><span className="font-semibold">Marketplaces seen:</span> {handoff.observedData.marketplacesSeen.join(", ") || "n/a"}</div>
+                  <div><span className="font-semibold">SKUs seen:</span> {handoff.observedData.skusSeen.join(", ") || "n/a"}</div>
+                  {handoff.observedData.validationErrors.length > 0 && (
+                    <div>
+                      <div className="font-semibold">Validation errors:</div>
+                      <ul className="list-disc list-inside">
+                        {handoff.observedData.validationErrors.map((err, i) => (
+                          <li key={i}>Row {err.rowIndex + 1}, {err.field}: {err.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Input Schema" />
+              <CardBody>
+                <div className="text-sm text-slate-700 space-y-2">
+                  <div><span className="font-semibold">Headers:</span> {handoff.inputSchema.headers.join(", ")}</div>
+                  <div className="text-sm">
+                    <div className="font-semibold">Mapped columns:</div>
+                    <ul className="list-disc list-inside">
+                      {Object.entries(handoff.inputSchema.mappedColumns).map(([f, h]) => (
+                        <li key={f}>{f} → {h}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="text-sm"><span className="font-semibold">Unmapped:</span> {handoff.inputSchema.unmappedColumns.join(", ") || "None"}</div>
+                </div>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Normalized Schema" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {handoff.normalizedSchema.map((s) => (
+                    <li key={s}>{s}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Business Rules" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {handoff.businessRules.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Human Approval Checkpoints" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {handoff.humanApprovalCheckpoints.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Edge Cases" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {handoff.edgeCases.map((e, i) => (
+                    <li key={i}>{e}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Production Requirements" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {handoff.productionRequirements.map((r, i) => (
+                    <li key={i}>{r}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Suggested Integrations" />
+              <CardBody>
+                <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                  {handoff.suggestedIntegrations.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+          </div>
+        )}
+      </div>
+    </DashboardLayout>
+  );
+}
