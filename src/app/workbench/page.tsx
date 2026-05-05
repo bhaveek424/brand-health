@@ -23,6 +23,13 @@ export default function WorkbenchPage() {
   const [liveUrlOrAsin, setLiveUrlOrAsin] = useState<string>("");
   const [liveLoading, setLiveLoading] = useState<boolean>(false);
   const [runMode, setRunMode] = useState<string>("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [providerMeta, setProviderMeta] = useState<{
+    provider: string;
+    model: string;
+    fallbackFrom?: string;
+    fallbackReason?: string;
+  } | null>(null);
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -48,25 +55,60 @@ export default function WorkbenchPage() {
     reader.readAsText(file);
   }, []);
 
-  const acceptMapping = useCallback(() => {
+  const acceptMapping = useCallback(async () => {
     if (!parsed || !mapping) return;
     if (mapping.missing.length > 0) {
       setError(`Missing required columns: ${mapping.missing.join(", ")}`);
       return;
     }
     setError("");
+    setIsAnalyzing(true);
     const { accepted: a, rejected: r } = normalizeRows(parsed.rows, mapping);
     setRejected(r);
     if (a.length === 0) {
       setError("All rows were rejected. Fix the issues below before proceeding.");
+      setIsAnalyzing(false);
       return;
     }
-    const ana = analyzeWorkbench(a);
-    setAnalysis(ana);
+
+    let ana: WorkbenchAnalysis;
+    try {
+      const res = await fetch("/api/workbench/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviews: a }),
+      });
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        ana = data.analysis;
+        setAnalysis(ana);
+        setProviderMeta({
+          provider: data.metadata?.provider ?? "unknown",
+          model: data.metadata?.model ?? "unknown",
+          fallbackFrom: data.metadata?.fallbackFrom,
+          fallbackReason: data.metadata?.fallbackReason,
+        });
+      } else {
+        throw new Error(data.error || `API error (${res.status})`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ana = analyzeWorkbench(a);
+      setAnalysis(ana);
+      setProviderMeta({
+        provider: "sample",
+        model: "deterministic",
+        fallbackFrom: "api",
+        fallbackReason: msg,
+      });
+    }
+
     const dr = generateActionDrafts(a, ana);
     setDrafts(dr);
     const h = generateHandoff(parsed.headers, mapping, a, r, parsed.rows.length);
     setHandoff(h);
+    setIsAnalyzing(false);
     setStep("analysis");
   }, [parsed, mapping]);
 
@@ -77,6 +119,8 @@ export default function WorkbenchPage() {
     setAnalysis(null);
     setDrafts(null);
     setHandoff(null);
+    setProviderMeta(null);
+    setIsAnalyzing(false);
     setError("");
     setRunMode("");
     setStep("upload");
@@ -110,7 +154,36 @@ export default function WorkbenchPage() {
         return;
       }
       setRunMode(json.runMode ?? "");
-      const ana = analyzeWorkbench(reviews);
+      let ana: WorkbenchAnalysis;
+      try {
+        const analysisRes = await fetch("/api/workbench/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reviews }),
+        });
+        const analysisJson = await analysisRes.json();
+
+        if (analysisRes.ok && analysisJson.success) {
+          ana = analysisJson.analysis;
+          setProviderMeta({
+            provider: analysisJson.metadata?.provider ?? "unknown",
+            model: analysisJson.metadata?.model ?? "unknown",
+            fallbackFrom: analysisJson.metadata?.fallbackFrom,
+            fallbackReason: analysisJson.metadata?.fallbackReason,
+          });
+        } else {
+          throw new Error(analysisJson.error || `Analysis API error (${analysisRes.status})`);
+        }
+      } catch (analysisErr) {
+        const msg = analysisErr instanceof Error ? analysisErr.message : String(analysisErr);
+        ana = analyzeWorkbench(reviews);
+        setProviderMeta({
+          provider: "sample",
+          model: "deterministic",
+          fallbackFrom: "api",
+          fallbackReason: msg,
+        });
+      }
       setAnalysis(ana);
       const dr = generateActionDrafts(reviews, ana);
       setDrafts(dr);
@@ -213,8 +286,8 @@ export default function WorkbenchPage() {
                   </div>
                 )}
                 <div className="mt-4 flex gap-2">
-                  <button onClick={acceptMapping} className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700">
-                    Run Analysis
+                  <button onClick={acceptMapping} disabled={isAnalyzing} className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed">
+                    {isAnalyzing ? "Analyzing..." : "Run Analysis"}
                   </button>
                   <button onClick={reset} className="px-4 py-2 text-sm font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
                     Cancel
@@ -253,6 +326,18 @@ export default function WorkbenchPage() {
 
         {step === "analysis" && analysis && (
           <div className="space-y-4">
+            {providerMeta && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="info">{providerMeta.provider}</Badge>
+                <Badge variant="neutral">{providerMeta.model}</Badge>
+                {providerMeta.fallbackFrom && (
+                  <Badge variant="warning">fallback: {providerMeta.fallbackFrom}</Badge>
+                )}
+                {providerMeta.fallbackReason && (
+                  <span className="text-xs text-amber-700" title={providerMeta.fallbackReason}>Warning: check console</span>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-4 gap-4">
               <Card className="p-4">
                 <div className="text-xs text-slate-500">Total Rows</div>
