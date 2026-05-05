@@ -3,7 +3,7 @@ import type { WorkbenchAnalysis, ThemeResult } from "@/lib/workbench/analysis";
 import type { AiAnalysisProvider, AiAnalysisResult } from "./schema";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const DEFAULT_MODEL = "z-ai/glm-5.1";
+const DEFAULT_MODEL = "meta/llama-3.1-8b-instruct";
 
 function emptyAnalysis(): WorkbenchAnalysis {
   return {
@@ -52,7 +52,7 @@ export class NvidiaGlmProvider implements AiAnalysisProvider {
             { role: "user", content: userPrompt(reviews) },
           ],
           temperature: 0.1,
-          max_tokens: 4096,
+          max_tokens: 1600,
           response_format: { type: "json_object" },
         }),
       });

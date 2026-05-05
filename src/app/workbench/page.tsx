@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { parseCsv, ParsedCsv } from "@/lib/workbench/csv-parser";
 import { mapColumns, ColumnMapping } from "@/lib/workbench/column-mapper";
@@ -10,6 +10,59 @@ import { generateActionDrafts, ActionDrafts } from "@/lib/workbench/drafting";
 import { generateHandoff, EngineeringHandoff } from "@/lib/workbench/engineering-handoff";
 import { NormalizedReview } from "@/lib/workbench/normalizer";
 import { Card, CardHeader, CardBody, Badge, ProgressBar } from "@/components/SharedUI";
+
+const STORAGE_KEY = "opptra-workbench-saved-run";
+
+type SavedRun = {
+  version: 1;
+  mode: "csv" | "live";
+  step: "analysis" | "drafts" | "handoff";
+  parsed?: ParsedCsv;
+  mapping?: ColumnMapping;
+  liveUrlOrAsin?: string;
+  analysis: WorkbenchAnalysis;
+  rejected: ValidationError[];
+  drafts: ActionDrafts;
+  handoff: EngineeringHandoff;
+  providerMeta: {
+    provider: string;
+    model: string;
+    fallbackFrom?: string;
+    fallbackReason?: string;
+  };
+  runMode: string;
+};
+
+function buildSavedRun(
+  mode: "csv" | "live",
+  step: "analysis" | "drafts" | "handoff",
+  opts: {
+    parsed?: ParsedCsv | null;
+    mapping?: ColumnMapping | null;
+    liveUrlOrAsin?: string;
+    analysis: WorkbenchAnalysis;
+    rejected: ValidationError[];
+    drafts: ActionDrafts;
+    handoff: EngineeringHandoff;
+    providerMeta: SavedRun["providerMeta"];
+    runMode: string;
+  }
+): SavedRun {
+  return {
+    version: 1,
+    mode,
+    step,
+    parsed: opts.parsed ?? undefined,
+    mapping: opts.mapping ?? undefined,
+    liveUrlOrAsin: opts.liveUrlOrAsin || undefined,
+    analysis: opts.analysis,
+    rejected: opts.rejected,
+    drafts: opts.drafts,
+    handoff: opts.handoff,
+    providerMeta: opts.providerMeta,
+    runMode: opts.runMode,
+  };
+}
 
 export default function WorkbenchPage() {
   const [step, setStep] = useState<"upload" | "mapping" | "analysis" | "drafts" | "handoff">("upload");
@@ -24,12 +77,55 @@ export default function WorkbenchPage() {
   const [liveLoading, setLiveLoading] = useState<boolean>(false);
   const [runMode, setRunMode] = useState<string>("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [providerMeta, setProviderMeta] = useState<{
     provider: string;
     model: string;
     fallbackFrom?: string;
     fallbackReason?: string;
   } | null>(null);
+
+  // Restore saved run on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const saved: SavedRun = JSON.parse(raw);
+      if (saved.version !== 1) return;
+
+      queueMicrotask(() => {
+        setAnalysis(saved.analysis);
+        setDrafts(saved.drafts);
+        setHandoff(saved.handoff);
+        setRejected(saved.rejected);
+        setProviderMeta(saved.providerMeta);
+        setRunMode(saved.runMode);
+        setStep(saved.step);
+
+        if (saved.mode === "csv" && saved.parsed && saved.mapping) {
+          setParsed(saved.parsed);
+          setMapping(saved.mapping);
+        } else if (saved.mode === "live" && saved.liveUrlOrAsin) {
+          setLiveUrlOrAsin(saved.liveUrlOrAsin);
+        }
+      });
+    } catch {
+      // ignore corrupt storage
+    }
+  }, []);
+
+  const persistRun = useCallback(
+    (mode: "csv" | "live", currentStep: typeof step, opts: Omit<Parameters<typeof buildSavedRun>[2], "parsed" | "mapping" | "liveUrlOrAsin">) => {
+      const saved = buildSavedRun(mode, currentStep as "analysis" | "drafts" | "handoff", {
+        ...opts,
+        parsed,
+        mapping,
+        liveUrlOrAsin,
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    },
+    [parsed, mapping, liveUrlOrAsin]
+  );
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -72,6 +168,7 @@ export default function WorkbenchPage() {
     }
 
     let ana: WorkbenchAnalysis;
+    let currentProviderMeta: SavedRun["providerMeta"] = { provider: "unknown", model: "unknown" };
     try {
       const res = await fetch("/api/workbench/analyze", {
         method: "POST",
@@ -82,26 +179,28 @@ export default function WorkbenchPage() {
 
       if (res.ok && data.success) {
         ana = data.analysis;
-        setAnalysis(ana);
-        setProviderMeta({
+        currentProviderMeta = {
           provider: data.metadata?.provider ?? "unknown",
           model: data.metadata?.model ?? "unknown",
           fallbackFrom: data.metadata?.fallbackFrom,
           fallbackReason: data.metadata?.fallbackReason,
-        });
+        };
+        setAnalysis(ana);
+        setProviderMeta(currentProviderMeta);
       } else {
         throw new Error(data.error || `API error (${res.status})`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       ana = analyzeWorkbench(a);
-      setAnalysis(ana);
-      setProviderMeta({
+      currentProviderMeta = {
         provider: "sample",
         model: "deterministic",
         fallbackFrom: "api",
         fallbackReason: msg,
-      });
+      };
+      setAnalysis(ana);
+      setProviderMeta(currentProviderMeta);
     }
 
     const dr = generateActionDrafts(a, ana);
@@ -110,7 +209,16 @@ export default function WorkbenchPage() {
     setHandoff(h);
     setIsAnalyzing(false);
     setStep("analysis");
-  }, [parsed, mapping]);
+
+    persistRun("csv", "analysis", {
+      analysis: ana,
+      rejected: r,
+      drafts: dr,
+      handoff: h,
+      providerMeta: currentProviderMeta,
+      runMode: "",
+    });
+  }, [parsed, mapping, persistRun]);
 
   const reset = useCallback(() => {
     setParsed(null);
@@ -121,10 +229,17 @@ export default function WorkbenchPage() {
     setHandoff(null);
     setProviderMeta(null);
     setIsAnalyzing(false);
+    setIsRefreshing(false);
     setError("");
     setRunMode("");
+    setLiveUrlOrAsin("");
     setStep("upload");
-  }, [setRunMode]);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const runLiveAnalysis = useCallback(async () => {
     if (!liveUrlOrAsin.trim()) {
@@ -153,8 +268,10 @@ export default function WorkbenchPage() {
         setError("No reviews returned.");
         return;
       }
-      setRunMode(json.runMode ?? "");
+      const currentRunMode = json.runMode ?? "";
+      setRunMode(currentRunMode);
       let ana: WorkbenchAnalysis;
+      let currentProviderMeta: SavedRun["providerMeta"] = { provider: "unknown", model: "unknown" };
       try {
         const analysisRes = await fetch("/api/workbench/analyze", {
           method: "POST",
@@ -165,24 +282,26 @@ export default function WorkbenchPage() {
 
         if (analysisRes.ok && analysisJson.success) {
           ana = analysisJson.analysis;
-          setProviderMeta({
+          currentProviderMeta = {
             provider: analysisJson.metadata?.provider ?? "unknown",
             model: analysisJson.metadata?.model ?? "unknown",
             fallbackFrom: analysisJson.metadata?.fallbackFrom,
             fallbackReason: analysisJson.metadata?.fallbackReason,
-          });
+          };
+          setProviderMeta(currentProviderMeta);
         } else {
           throw new Error(analysisJson.error || `Analysis API error (${analysisRes.status})`);
         }
       } catch (analysisErr) {
         const msg = analysisErr instanceof Error ? analysisErr.message : String(analysisErr);
         ana = analyzeWorkbench(reviews);
-        setProviderMeta({
+        currentProviderMeta = {
           provider: "sample",
           model: "deterministic",
           fallbackFrom: "api",
           fallbackReason: msg,
-        });
+        };
+        setProviderMeta(currentProviderMeta);
       }
       setAnalysis(ana);
       const dr = generateActionDrafts(reviews, ana);
@@ -200,15 +319,77 @@ export default function WorkbenchPage() {
       );
       setHandoff(hand);
       setStep("analysis");
+
+      persistRun("live", "analysis", {
+        analysis: ana,
+        rejected: [],
+        drafts: dr,
+        handoff: hand,
+        providerMeta: currentProviderMeta,
+        runMode: currentRunMode,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Live run failed");
     } finally {
       setLiveLoading(false);
     }
-  }, [liveUrlOrAsin, setLiveLoading, setRunMode]);
+  }, [liveUrlOrAsin, persistRun]);
+
+  const handleRefreshRun = useCallback(async () => {
+    setIsRefreshing(true);
+    setError("");
+    try {
+      if (parsed && mapping) {
+        await acceptMapping();
+      } else if (liveUrlOrAsin.trim()) {
+        await runLiveAnalysis();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Refresh failed");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [parsed, mapping, liveUrlOrAsin, acceptMapping, runLiveAnalysis]);
+
+  const handleNewRun = useCallback(() => {
+    reset();
+  }, [reset]);
+
+  const persistStep = useCallback((nextStep: SavedRun["step"]) => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const saved: SavedRun = JSON.parse(raw);
+      saved.step = nextStep;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const hasRestorableInput = Boolean((parsed && mapping) || liveUrlOrAsin.trim());
+  const hasRun = Boolean(analysis);
 
   const previewHeaders = parsed ? parsed.headers.slice(0, 5) : [];
   const previewRows = parsed ? parsed.rows.slice(0, 5) : [];
+
+  const renderCommandBar = () => (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={handleRefreshRun}
+        disabled={isRefreshing || !hasRestorableInput}
+        className="px-3 py-1.5 text-xs font-medium bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {isRefreshing ? "Refreshing..." : "Refresh run"}
+      </button>
+      <button
+        onClick={handleNewRun}
+        className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50"
+      >
+        New run
+      </button>
+    </div>
+  );
 
   return (
     <DashboardLayout>
@@ -216,6 +397,12 @@ export default function WorkbenchPage() {
 
         {error && (
           <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+        )}
+
+        {isRefreshing && (
+          <div className="rounded border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700">
+            Refreshing analysis...
+          </div>
         )}
 
         {step === "upload" && (
@@ -326,18 +513,22 @@ export default function WorkbenchPage() {
 
         {step === "analysis" && analysis && (
           <div className="space-y-4">
-            {providerMeta && (
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="info">{providerMeta.provider}</Badge>
-                <Badge variant="neutral">{providerMeta.model}</Badge>
-                {providerMeta.fallbackFrom && (
-                  <Badge variant="warning">fallback: {providerMeta.fallbackFrom}</Badge>
-                )}
-                {providerMeta.fallbackReason && (
-                  <span className="text-xs text-amber-700" title={providerMeta.fallbackReason}>Warning: check console</span>
-                )}
-              </div>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {providerMeta && (
+                <>
+                  <Badge variant="info">{providerMeta.provider}</Badge>
+                  <Badge variant="neutral">{providerMeta.model}</Badge>
+                  {providerMeta.fallbackFrom && (
+                    <Badge variant="warning">fallback: {providerMeta.fallbackFrom}</Badge>
+                  )}
+                  {providerMeta.fallbackReason && (
+                    <span className="text-xs text-amber-700" title={providerMeta.fallbackReason}>Warning: check console</span>
+                  )}
+                </>
+              )}
+              <div className="flex-1" />
+              {hasRun && renderCommandBar()}
+            </div>
             <div className="grid grid-cols-4 gap-4">
               <Card className="p-4">
                 <div className="text-xs text-slate-500">Total Rows</div>
@@ -466,10 +657,10 @@ export default function WorkbenchPage() {
             </Card>
 
             <div className="flex gap-2">
-              <button onClick={() => setStep("drafts")} className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700">
+              <button onClick={() => { setStep("drafts"); persistStep("drafts"); }} className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700">
                 View Action Drafts
               </button>
-              <button onClick={() => setStep("handoff")} className="px-4 py-2 text-sm font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
+              <button onClick={() => { setStep("handoff"); persistStep("handoff"); }} className="px-4 py-2 text-sm font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">
                 Engineering Handoff
               </button>
             </div>
@@ -479,8 +670,10 @@ export default function WorkbenchPage() {
         {step === "drafts" && drafts && (
           <div className="space-y-4">
             <div className="flex items-center gap-2">
-              <button onClick={() => setStep("analysis")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Back to Analysis</button>
-              <button onClick={() => setStep("handoff")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Engineering Handoff</button>
+              <button onClick={() => { setStep("analysis"); persistStep("analysis"); }} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Back to Analysis</button>
+              <button onClick={() => { setStep("handoff"); persistStep("handoff"); }} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Engineering Handoff</button>
+              <div className="flex-1" />
+              {hasRun && renderCommandBar()}
             </div>
 
             <Card>
@@ -538,8 +731,10 @@ export default function WorkbenchPage() {
         {step === "handoff" && handoff && (
           <div className="space-y-4">
             <div className="flex items-center gap-2">
-              <button onClick={() => setStep("analysis")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Back to Analysis</button>
-              <button onClick={() => setStep("drafts")} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Action Drafts</button>
+              <button onClick={() => { setStep("analysis"); persistStep("analysis"); }} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Back to Analysis</button>
+              <button onClick={() => { setStep("drafts"); persistStep("drafts"); }} className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded hover:bg-slate-50">Action Drafts</button>
+              <div className="flex-1" />
+              {hasRun && renderCommandBar()}
             </div>
 
             <Card>

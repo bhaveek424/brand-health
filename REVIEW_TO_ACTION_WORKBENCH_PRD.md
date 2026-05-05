@@ -207,7 +207,7 @@ Recommended env vars:
 ```bash
 SERPAPI_API_KEY=...
 NVIDIA_API_KEY=...
-NVIDIA_MODEL=z-ai/glm-5.1
+NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 ```
 
 ## 11. Live Data Plan
@@ -216,7 +216,7 @@ Use free-first options:
 
 - Amazon: SerpApi free tier where available.
 - Flipkart/Noon: Apify free credits later, adapter-ready only.
-- AI: NVIDIA GLM-5.1 hosted API or sample provider fallback.
+- AI: NVIDIA-hosted 8B instruct model for fast demos, GLM-5.1 for slower quality runs, or sample provider fallback.
 
 The UI must label run mode:
 
@@ -266,4 +266,3 @@ The pivot succeeds if a hiring manager can see:
 7. Show supplier escalation and Slack update.
 8. Show Engineering Handoff.
 9. Explain live Amazon and NVIDIA GLM provider as next slices.
-
