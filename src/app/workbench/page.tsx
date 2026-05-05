@@ -8,6 +8,7 @@ import { normalizeRows, ValidationError } from "@/lib/workbench/normalizer";
 import { analyzeWorkbench, WorkbenchAnalysis } from "@/lib/workbench/analysis";
 import { generateActionDrafts, ActionDrafts } from "@/lib/workbench/drafting";
 import { generateHandoff, EngineeringHandoff } from "@/lib/workbench/engineering-handoff";
+import { NormalizedReview } from "@/lib/workbench/normalizer";
 import { Card, CardHeader, CardBody, Badge, ProgressBar } from "@/components/SharedUI";
 
 export default function WorkbenchPage() {
@@ -19,6 +20,9 @@ export default function WorkbenchPage() {
   const [drafts, setDrafts] = useState<ActionDrafts | null>(null);
   const [handoff, setHandoff] = useState<EngineeringHandoff | null>(null);
   const [error, setError] = useState<string>("");
+  const [liveUrlOrAsin, setLiveUrlOrAsin] = useState<string>("");
+  const [liveLoading, setLiveLoading] = useState<boolean>(false);
+  const [runMode, setRunMode] = useState<string>("");
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -74,8 +78,61 @@ export default function WorkbenchPage() {
     setDrafts(null);
     setHandoff(null);
     setError("");
+    setRunMode("");
     setStep("upload");
-  }, []);
+  }, [setRunMode]);
+
+  const runLiveAnalysis = useCallback(async () => {
+    if (!liveUrlOrAsin.trim()) {
+      setError("Enter an Amazon URL or ASIN.");
+      return;
+    }
+    setError("");
+    setLiveLoading(true);
+    try {
+      const res = await fetch("/api/live-amazon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urlOrAsin: liveUrlOrAsin.trim(), amazonDomain: "amazon.com" }),
+      });
+      const json = (await res.json()) as {
+        reviews?: NormalizedReview[];
+        runMode?: string;
+        error?: string;
+      };
+      if (!res.ok || json.error) {
+        setError(json.error ?? `Live run failed (HTTP ${res.status})`);
+        return;
+      }
+      const reviews = json.reviews ?? [];
+      if (reviews.length === 0) {
+        setError("No reviews returned.");
+        return;
+      }
+      setRunMode(json.runMode ?? "");
+      const ana = analyzeWorkbench(reviews);
+      setAnalysis(ana);
+      const dr = generateActionDrafts(reviews, ana);
+      setDrafts(dr);
+      const hand = generateHandoff(
+        ["ASIN", "Product Name", "Rating", "Review", "Date", "Marketplace", "Market", "Language", "SKU"],
+        {
+          mapped: { marketplace: "Marketplace", market: "Market", product_name: "Product Name", sku: "ASIN", rating: "Rating", review: "Review", date: "Date", language: "Language" },
+          unmapped: [],
+          missing: [],
+        },
+        reviews,
+        [],
+        reviews.length
+      );
+      setHandoff(hand);
+      setStep("analysis");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Live run failed");
+    } finally {
+      setLiveLoading(false);
+    }
+  }, [liveUrlOrAsin, setLiveLoading, setRunMode]);
 
   const previewHeaders = parsed ? parsed.headers.slice(0, 5) : [];
   const previewRows = parsed ? parsed.rows.slice(0, 5) : [];
@@ -89,16 +146,46 @@ export default function WorkbenchPage() {
         )}
 
         {step === "upload" && (
-          <Card>
-            <CardHeader title="Upload Review CSV" />
-            <CardBody>
-              <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:bg-slate-50">
-                <span className="text-sm text-slate-600">Click or drop a .csv review export</span>
-                <span className="text-xs text-slate-400 mt-1">Required: marketplace, market, product_name, sku, rating, review, date, language</span>
-                <input type="file" accept=".csv" className="hidden" onChange={onFileChange} />
-              </label>
-            </CardBody>
-          </Card>
+          <div className="space-y-4">
+            <Card>
+              <CardHeader title="Upload Review CSV" />
+              <CardBody>
+                <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:bg-slate-50">
+                  <span className="text-sm text-slate-600">Click or drop a .csv review export</span>
+                  <span className="text-xs text-slate-400 mt-1">Required: marketplace, market, product_name, sku, rating, review, date, language</span>
+                  <input type="file" accept=".csv" className="hidden" onChange={onFileChange} />
+                </label>
+              </CardBody>
+            </Card>
+
+            <Card>
+              <CardHeader title="Live Amazon Adapter" />
+              <CardBody>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={liveUrlOrAsin}
+                    onChange={(e) => setLiveUrlOrAsin(e.target.value)}
+                    placeholder="Paste Amazon URL or ASIN"
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded text-sm"
+                  />
+                  <button
+                    onClick={runLiveAnalysis}
+                    disabled={liveLoading}
+                    className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-50"
+                  >
+                    {liveLoading ? "Loading..." : "Run Live"}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 mt-2 mb-0">Accepts raw ASIN, /dp/&lt;ASIN&gt;, or /gp/product/&lt;ASIN&gt;</p>
+                {runMode && (
+                  <div className="mt-2">
+                    <Badge variant={runMode === "Live API run" ? "info" : "neutral"}>{runMode}</Badge>
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+          </div>
         )}
 
         {step === "mapping" && parsed && mapping && (
