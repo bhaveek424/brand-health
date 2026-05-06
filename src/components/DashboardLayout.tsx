@@ -9,11 +9,13 @@ const navItems = [
   { href: "/responses", label: "Response Queue" },
   { href: "/brief", label: "Weekly Brief" },
   { href: "/workbench", label: "Workbench" },
+  { href: "/gtm-workbench", label: "AI GTM Copilot" },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isWorkbench = pathname === "/workbench";
+  const isGtmWorkbench = pathname === "/gtm-workbench";
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
@@ -22,7 +24,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="px-4 py-4 border-b border-slate-700">
           <div className="text-sm font-semibold tracking-wide text-slate-300">OPPTRA</div>
           <div className="text-xs text-slate-500 mt-0.5">
-            {isWorkbench ? "Review-to-Action Workbench" : "Brand Health Agent"}
+            {isWorkbench ? "Review-to-Action Workbench" : isGtmWorkbench ? "AI GTM Copilot" : "Brand Health Agent"}
           </div>
         </div>
         <nav className="flex-1 px-2 py-3 space-y-0.5">
@@ -42,7 +44,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           })}
         </nav>
         <div className="px-4 py-3 border-t border-slate-700 text-xs text-slate-500">
-          {isWorkbench ? "CSV Workflow Mode" : "Demo Mode — Seeded Data"}
+          {isWorkbench ? "CSV Workflow Mode" : isGtmWorkbench ? "GTM Agent Mode" : "Demo Mode — Seeded Data"}
         </div>
       </aside>
 
@@ -53,6 +55,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <div className="flex items-center gap-3">
               <span className="text-sm font-semibold text-slate-800">Review-to-Action Workbench</span>
               <span className="text-xs text-slate-400">CSV upload → analysis → action drafts → handoff</span>
+            </div>
+          ) : isGtmWorkbench ? (
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-slate-800">AI GTM Copilot</span>
+              <span className="text-xs text-slate-400">Product intake → evidence → risks → action drafts</span>
             </div>
           ) : (
             <div className="flex items-center gap-3">

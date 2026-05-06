@@ -42,13 +42,18 @@ Create `.env` or `.env.local` in the project root:
 SERPAPI_API_KEY=your_serpapi_key
 NVIDIA_API_KEY=your_nvidia_api_key
 NVIDIA_MODEL=meta/llama-3.1-8b-instruct
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
 ```
 
 `NVIDIA_MODEL` is optional. The app defaults to `meta/llama-3.1-8b-instruct` for faster demos. Use `z-ai/glm-5.1` when quality matters more than latency.
 
+`NEXT_PUBLIC_BACKEND_URL` is optional and defaults to `http://localhost:8000`.
+
 Do not commit `.env` files. They are already ignored by git.
 
 ## Local Setup
+
+### Frontend
 
 ```bash
 npm install
@@ -61,13 +66,26 @@ Open:
 http://localhost:3000
 ```
 
-Useful routes:
+### Backend (AI GTM Copilot)
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+The backend exposes a health endpoint at `http://localhost:8000/health`.
+
+## Useful Routes
 
 - `/` - Brand Health dashboard
 - `/issues` - Issue trends
 - `/responses` - Response queue
 - `/brief` - Weekly brief
 - `/workbench` - Live review intelligence run
+- `/gtm-workbench` - AI GTM Copilot command center
 
 ## Validation
 
@@ -105,10 +123,12 @@ The live fetch is cached in server memory by marketplace and ASIN for the lifeti
 ## Project Structure
 
 ```text
+backend/                    Python FastAPI backend for AI GTM Copilot
 src/app/
   api/live-amazon/          Server route for live Amazon review lookup
   api/workbench/analyze/    Server route for AI analysis
   workbench/                Review intelligence run UI
+  gtm-workbench/            AI GTM Copilot command center
   issues/                   Issue trends dashboard
   responses/                Response queue dashboard
   brief/                    Weekly brief dashboard
