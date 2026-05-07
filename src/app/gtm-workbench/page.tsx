@@ -26,6 +26,38 @@ type Run = {
   events: RunEvent[];
 };
 
+type ExtractionQuality = {
+  confidence: number;
+  missing_fields: string[];
+  warnings: string[];
+};
+
+type Evidence = {
+  id: string;
+  run_id: string;
+  source: string;
+  status: string;
+  input_url: string;
+  product_title?: string;
+  brand?: string;
+  price?: string;
+  currency?: string;
+  rating?: string;
+  review_count?: string;
+  availability?: string;
+  seller?: string;
+  images: string[];
+  bullets: string[];
+  description?: string;
+  specifications: Record<string, string>[];
+  warranty_or_returns?: string;
+  review_snippets: string[];
+  summary?: string;
+  extraction_quality: ExtractionQuality;
+  created_at: string;
+  updated_at: string;
+};
+
 function useBackendHealth() {
   const [status, setStatus] = useState<BackendStatus>("offline");
   useEffect(() => {
@@ -84,23 +116,43 @@ function GtmWorkbenchInner() {
   const [run, setRun] = useState<Run | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string>("");
+
+  const loadRun = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${runId}`);
+      if (!res.ok) throw new Error("Failed to load run");
+      const data = (await res.json()) as Run;
+      setRun(data);
+      setProductUrl(data.input_url);
+      return data;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load run");
+      return null;
+    }
+  }, []);
+
+  const loadEvidence = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${runId}/evidence`);
+      if (!res.ok) return;
+      const data = (await res.json()) as Evidence | null;
+      setEvidence(data);
+    } catch {
+      // ignore; evidence may not exist yet
+    }
+  }, []);
 
   useEffect(() => {
     const runId = getRunIdFromUrl();
     if (!runId) return;
-    async function load(runId: string) {
-      try {
-        const res = await fetch(`${BACKEND_URL}/runs/${runId}`);
-        if (!res.ok) throw new Error("Failed to load run");
-        const data = (await res.json()) as Run;
-        setRun(data);
-        setProductUrl(data.input_url);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load run");
-      }
-    }
-    load(runId);
-  }, []);
+    void (async () => {
+      const r = await loadRun(runId);
+      if (r) await loadEvidence(r.id);
+    })();
+  }, [loadRun, loadEvidence]);
 
   const canRun =
     backendStatus === "connected" && productUrl.trim().length > 0;
@@ -128,6 +180,29 @@ function GtmWorkbenchInner() {
       setLoading(false);
     }
   }, [canRun, productUrl, router]);
+
+  const handleExtract = useCallback(async () => {
+    if (!run) return;
+    setExtracting(true);
+    setExtractError("");
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${run.id}/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = (await res.json()) as { detail?: string } & Partial<Evidence>;
+      if (!res.ok) {
+        throw new Error(data.detail || `Error ${res.status}`);
+      }
+      setEvidence(data as Evidence);
+      // Refresh run/events
+      await loadRun(run.id);
+    } catch (err) {
+      setExtractError(err instanceof Error ? err.message : "Extraction failed");
+    } finally {
+      setExtracting(false);
+    }
+  }, [run, loadRun]);
 
   const backendBadge = {
     connected: <Badge variant="success">Backend Connected</Badge>,
@@ -161,6 +236,19 @@ function GtmWorkbenchInner() {
               >
                 {loading ? "Running..." : "Run Intake"}
               </button>
+              {run && (
+                <button
+                  onClick={handleExtract}
+                  disabled={extracting}
+                  className={`px-4 py-2 text-sm font-medium text-white rounded ${
+                    !extracting
+                      ? "bg-indigo-600 hover:bg-indigo-500"
+                      : "bg-slate-400 opacity-60 cursor-not-allowed"
+                  }`}
+                >
+                  {extracting ? "Extracting..." : "Extract Evidence"}
+                </button>
+              )}
               <Badge variant="info">AI GTM Copilot</Badge>
               {backendBadge}
             </CardBody>
@@ -171,15 +259,145 @@ function GtmWorkbenchInner() {
               {error}
             </div>
           )}
+          {extractError && (
+            <div className="rounded border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">
+              {extractError}
+            </div>
+          )}
+
+          {/* Evidence Pack */}
+          {evidence && (
+            <Card className="border-l-4 border-l-indigo-500">
+              <CardHeader
+                title="Evidence Pack"
+                subtitle={
+                  evidence.status === "completed"
+                    ? `Extracted from ${evidence.source}`
+                    : `Extraction status: ${evidence.status}`
+                }
+              />
+              <CardBody>
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-1">Title</div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {evidence.product_title || "N/A"}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-1">Brand</div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {evidence.brand || "N/A"}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-1">Price</div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {evidence.price && evidence.currency
+                          ? `${evidence.price} ${evidence.currency}`
+                          : evidence.price || "N/A"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-1">Rating</div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {evidence.rating ? `${evidence.rating} (${evidence.review_count || 0} reviews)` : "N/A"}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-1">Availability</div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {evidence.availability || "N/A"}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-1">Seller</div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {evidence.seller || "N/A"}
+                      </div>
+                    </div>
+                  </div>
+                  {(evidence.bullets && evidence.bullets.length > 0) && (
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-2">Bullets</div>
+                      <ul className="list-disc list-inside text-sm text-slate-700 space-y-1">
+                        {evidence.bullets.map((b, i) => (
+                          <li key={i}>{b}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {(evidence.specifications && evidence.specifications.length > 0) && (
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-2">Specifications</div>
+                      <div className="grid grid-cols-2 gap-2 text-sm text-slate-700">
+                        {evidence.specifications.map((spec, i) => {
+                          const entries = Object.entries(spec);
+                          return (
+                            <div key={i} className="flex gap-2">
+                              <span className="font-medium">{entries[0]?.[0] || "Spec"}:</span>
+                              <span>{entries[0]?.[1] || ""}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {evidence.review_snippets && evidence.review_snippets.length > 0 && (
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-2">Review Snippets</div>
+                      <div className="space-y-2">
+                        {evidence.review_snippets.map((s, i) => (
+                          <div key={i} className="text-sm text-slate-700 italic">&quot;{s}&quot;</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {evidence.summary && (
+                    <div className="border border-slate-200 rounded p-3">
+                      <div className="text-xs text-slate-500 mb-2">Summary</div>
+                      <div className="text-sm text-slate-700">{evidence.summary}</div>
+                    </div>
+                  )}
+                  {evidence.extraction_quality && (
+                    <div className="rounded bg-slate-50 p-3 text-sm text-slate-600">
+                      <div className="font-medium text-slate-700 mb-1">Extraction Quality</div>
+                      <div>Confidence: {evidence.extraction_quality.confidence || 0}</div>
+                      {evidence.extraction_quality.missing_fields.length > 0 && (
+                        <div className="mt-1 text-orange-600">
+                          Missing: {evidence.extraction_quality.missing_fields.join(", ")}
+                        </div>
+                      )}
+                      {evidence.extraction_quality.warnings.length > 0 && (
+                        <div className="mt-1 text-orange-600">
+                          Warnings: {evidence.extraction_quality.warnings.join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Placeholder grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card>
               <CardHeader title="Evidence" subtitle="Scraped signals and review highlights" />
               <CardBody>
-                <div className="text-sm text-slate-400 italic">
-                  Evidence panel will populate after intake run.
-                </div>
+                {evidence ? (
+                  <div className="space-y-2">
+                    <div className="text-sm text-slate-700">{evidence.product_title || "No title"}</div>
+                    <div className="text-xs text-slate-500">Source: {evidence.source}</div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-400 italic">
+                    Evidence panel will populate after intake run.
+                  </div>
+                )}
               </CardBody>
             </Card>
 

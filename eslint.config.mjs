@@ -13,6 +13,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Python backend artifacts
+    "backend/.venv/**",
+    "backend/__pycache__/**",
+    "backend/**/*.pyc",
   ]),
 ]);
 

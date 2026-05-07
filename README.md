@@ -43,6 +43,8 @@ SERPAPI_API_KEY=your_serpapi_key
 NVIDIA_API_KEY=your_nvidia_api_key
 NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+SCRAPEGRAPH_LLM_MODEL=openai/gpt-4o-mini
+OPENAI_API_KEY=your_openai_key
 ```
 
 `NVIDIA_MODEL` is optional. The app defaults to `meta/llama-3.1-8b-instruct` for faster demos. Use `z-ai/glm-5.1` when quality matters more than latency.
@@ -73,6 +75,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 Run the backend:
@@ -95,6 +98,10 @@ The backend exposes:
 - `GET /health`
 - `POST /runs`
 - `GET /runs/{run_id}`
+- `POST /runs/{run_id}/extract` - Live product evidence extraction via open-source ScrapeGraphAI
+- `GET /runs/{run_id}/evidence` - Fetch extracted evidence for a run
+
+The extraction path uses the open-source `scrapegraphai` Python library locally inside our FastAPI backend. It does not call ScrapeGraphAI Cloud and does not require a ScrapeGraphAI platform API key. The backend still needs an LLM provider key or a local model such as Ollama.
 
 ## Useful Routes
 
