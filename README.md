@@ -43,6 +43,7 @@ SERPAPI_API_KEY=your_serpapi_key
 NVIDIA_API_KEY=your_nvidia_api_key
 NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+NEXT_PUBLIC_TAMBO_API_KEY=your_tambo_key
 SCRAPEGRAPH_LLM_MODEL=openai/gpt-4o-mini
 OPENAI_API_KEY=your_openai_key
 ```
@@ -50,6 +51,8 @@ OPENAI_API_KEY=your_openai_key
 `NVIDIA_MODEL` is optional. The app defaults to `meta/llama-3.1-8b-instruct` for faster demos. Use `z-ai/glm-5.1` when quality matters more than latency.
 
 `NEXT_PUBLIC_BACKEND_URL` is optional and defaults to `http://localhost:8000`.
+
+`NEXT_PUBLIC_TAMBO_API_KEY` is required to enable the AI Copilot panel in `/gtm-workbench`. Without it, the panel renders a configuration prompt instead of crashing.
 
 Do not commit `.env` files. They are already ignored by git.
 

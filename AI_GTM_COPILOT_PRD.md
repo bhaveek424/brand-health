@@ -108,6 +108,10 @@ OLLAMA_BASE_URL=http://localhost:11434
 - Real email, Slack, ticket, or marketplace reply connectors.
 - Hosted ScrapeGraphAI Cloud integration.
 
+## Completed: Issue 019 - Tambo Copilot Shell and Run Tools
+
+Issue 019 adds the Tambo-powered AI Copilot panel to the `/gtm-workbench` right sidebar. `src/components/CopilotPanel.tsx` is a self-contained `"use client"` component that wraps its own `TamboProvider` (scoped, not in root layout). It accepts `onRunCreated`, `onRunLoaded`, and `currentRun` props. Two tools are registered via `registerTools` in a `useEffect`: `createRunFromUrl` (calls `POST /runs`, invokes `onRunCreated` to update page state) and `getRunStatus` (calls `GET /runs/{id}`, invokes `onRunLoaded`). Tool state updates drive the same run/event timeline as manual UI controls — both paths are unified. Messages are rendered by filtering content blocks for `type === "text"`. Without `NEXT_PUBLIC_TAMBO_API_KEY`, the panel renders a configuration prompt rather than crashing. The `GtmWorkbenchInner` component adds `handleRunCreated` (full downstream state clear + URL sync) and `handleRunLoaded` (run state refresh) callbacks, passed as props to `CopilotPanel`.
+
 ## Completed: Issue 018 - Approve and Simulate Action Handoff
 
 Issue 018 adds status transitions and an immutable audit trail to the action draft layer. `POST /actions/{action_id}/approve` transitions `draft → approved`, writes an `action_audit_log` row, and emits `action_approved`. `POST /actions/{action_id}/simulate-send` transitions `approved → simulated_sent`, writes another audit row, emits `action_simulated_sent`, and returns a `SimulatedSendPreview` with target_system, payload snapshot, and the message "Simulated only. No external message was sent." — no real connector is called. Invalid transitions (e.g. approving a non-draft, simulating before approval) return 409 with a descriptive message. The `/gtm-workbench` UI renders per-draft Approve / Simulate Send buttons that update status immediately from backend response, shows the simulated send preview in the expanded card, and uses status-specific badges (draft/approved/simulated sent).

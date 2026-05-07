@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter } from "next/navigation";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Card, CardHeader, CardBody, Badge } from "@/components/SharedUI";
+import { CopilotPanel } from "@/components/CopilotPanel";
 import { BACKEND_URL } from "@/lib/backend";
 
 type BackendStatus = "connected" | "degraded" | "offline";
@@ -482,6 +483,32 @@ function GtmWorkbenchInner() {
       setLoading(false);
     }
   }, [canRun, productUrl, router]);
+
+  const handleRunCreated = useCallback(
+    (newRun: Run) => {
+      setRun(newRun);
+      setProductUrl(newRun.input_url);
+      setEvidence(null);
+      setChunks([]);
+      setSearchResults(null);
+      setSearchQuery("");
+      setAnalysis(null);
+      setDrafts([]);
+      setExpandedDraft(null);
+      setDraftPending({});
+      setDraftErrors({});
+      setSimulatedPreviews({});
+      setExtractError("");
+      setAnalyzeError("");
+      setDraftsError("");
+      setRunIdInUrl(newRun.id, router);
+    },
+    [router]
+  );
+
+  const handleRunLoaded = useCallback((loadedRun: Run) => {
+    setRun(loadedRun);
+  }, []);
 
   const handleExtract = useCallback(async () => {
     if (!run) return;
@@ -1313,21 +1340,15 @@ function GtmWorkbenchInner() {
 
         {/* Right sidebar */}
         <aside className="w-80 shrink-0 flex flex-col gap-4">
-          <Card className="flex-1">
+          <Card className="flex-1 flex flex-col min-h-0 max-h-[480px]">
             <CardHeader title="AI Copilot" subtitle="Agent chat and guidance" />
-            <CardBody>
-              <div className="space-y-3">
-                <div className="text-sm text-slate-400 italic">
-                  Copilot will appear here once the backend is connected.
-                </div>
-                <div className="border border-slate-200 rounded bg-slate-50 p-3">
-                  <div className="text-xs text-slate-500 mb-1">Status</div>
-                  <div className="text-sm font-medium text-slate-700">
-                    {backendStatus === "connected" ? "Ready" : "Waiting for backend..."}
-                  </div>
-                </div>
-              </div>
-            </CardBody>
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <CopilotPanel
+                onRunCreated={handleRunCreated}
+                onRunLoaded={handleRunLoaded}
+                currentRun={run}
+              />
+            </div>
           </Card>
 
           <Card>
