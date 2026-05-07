@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, JSON, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from database import Base
 
@@ -123,3 +123,29 @@ class EvidenceChunk(Base):
     embedding = Column(_Vector(1536) if _PGVECTOR_AVAILABLE else JSONB, nullable=True)
     embedding_status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), default=now_utc)
+
+
+class Analysis(Base):
+    """Persisted GTM risk analysis derived from evidence chunks for a run."""
+
+    __tablename__ = "analyses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String, nullable=False, default="pending")
+    provider = Column(String, nullable=False, default="unknown")
+    model = Column(String, nullable=True)
+    health_score = Column(Integer, nullable=True)
+    top_risks = Column(JSONB, default=list)
+    issue_themes = Column(JSONB, default=list)
+    listing_quality = Column(JSONB, default=dict)
+    recommended_actions = Column(JSONB, default=list)
+    citations = Column(JSONB, default=list)
+    raw_response = Column(JSONB, default=dict)
+    created_at = Column(DateTime(timezone=True), default=now_utc)
+    updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)

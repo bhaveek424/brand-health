@@ -65,6 +65,8 @@ FastAPI endpoints:
 - `GET /runs/{run_id}/evidence`
 - `GET /runs/{run_id}/evidence/chunks`
 - `POST /runs/{run_id}/evidence/search`
+- `POST /runs/{run_id}/analyze`
+- `GET /runs/{run_id}/analysis`
 
 Persistence:
 
@@ -73,6 +75,7 @@ Persistence:
 - `run_events`
 - `extraction_runs`
 - `evidence_chunks` (pgvector, 1536-dim embeddings via OpenAI text-embedding-3-small)
+- `analyses` (GTM risk analysis: health score, risks, themes, listing QA, actions, citations)
 
 ## Environment
 
@@ -98,6 +101,10 @@ OLLAMA_BASE_URL=http://localhost:11434
 - Action drafts.
 - Real email, Slack, ticket, or marketplace reply connectors.
 - Hosted ScrapeGraphAI Cloud integration.
+
+## Completed: Issue 016 - GTM Risk Analysis
+
+Issue 016 adds persisted GTM risk analysis from stored evidence chunks. `POST /runs/{run_id}/analyze` loads `EvidenceChunk` rows for the run, calls OpenAI (`gpt-4o-mini` by default, configurable via `ANALYSIS_MODEL`) with a structured JSON prompt, and persists the result in the `analyses` table. If `OPENAI_API_KEY` is absent or the call fails, a rule-based deterministic analysis is generated and clearly labeled `provider: "deterministic_fallback"`. Workflow events: `analysis_started`, `analysis_completed`, `analysis_fallback_used`, `analysis_failed`. The `/gtm-workbench` UI renders health score, risk cards, issue themes, listing QA checklist, recommended actions, and evidence citations.
 
 ## Completed: Issue 015 - Evidence Chunks and Embeddings
 

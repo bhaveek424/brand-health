@@ -100,3 +100,60 @@ class EvidenceSearchResponse(BaseModel):
     query: str
     search_mode: Literal["vector", "text"]
     results: List[EvidenceSearchResult] = Field(default_factory=list)
+
+
+# --- Analysis schemas ---
+
+class RiskItem(BaseModel):
+    title: str
+    severity: Literal["high", "medium", "low"]
+    description: str
+    cited_chunk_ids: List[str] = Field(default_factory=list)
+
+
+class IssueTheme(BaseModel):
+    theme: str
+    frequency: Literal["high", "medium", "low"]
+    description: str
+    cited_chunk_ids: List[str] = Field(default_factory=list)
+
+
+class ListingFinding(BaseModel):
+    field: str
+    status: Literal["pass", "warning", "fail"]
+    note: str
+    cited_chunk_ids: List[str] = Field(default_factory=list)
+
+
+class ListingQuality(BaseModel):
+    score: int = 0
+    findings: List[ListingFinding] = Field(default_factory=list)
+
+
+class RecommendedAction(BaseModel):
+    action: str
+    priority: Literal["high", "medium", "low"]
+    description: str
+    cited_chunk_ids: List[str] = Field(default_factory=list)
+
+
+class AnalysisCitation(BaseModel):
+    chunk_id: str
+    source_type: str
+    excerpt: str
+
+
+class AnalysisResponse(BaseModel):
+    id: UUID
+    run_id: UUID
+    status: str
+    provider: str
+    analysis_model: Optional[str] = None
+    health_score: Optional[int] = None
+    top_risks: List[RiskItem] = Field(default_factory=list)
+    issue_themes: List[IssueTheme] = Field(default_factory=list)
+    listing_quality: ListingQuality = Field(default_factory=ListingQuality)
+    recommended_actions: List[RecommendedAction] = Field(default_factory=list)
+    citations: List[AnalysisCitation] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime

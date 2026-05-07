@@ -56,7 +56,8 @@ OLLAMA_BASE_URL=http://localhost:11434
 - `FRONTEND_URL` - CORS origin for the Next.js frontend.
 - `DATABASE_URL` - Async Postgres connection string. If omitted, the backend starts but run persistence returns 503.
 - `SCRAPEGRAPH_LLM_MODEL` - Model used by the open-source ScrapeGraphAI local graph.
-- `OPENAI_API_KEY` - Used for both ScrapeGraphAI extraction and evidence chunk embeddings (`text-embedding-3-small`, 1536 dims). If omitted, extraction still works but chunks will have `embedding_status: "missing_provider"` and only text search is available.
+- `OPENAI_API_KEY` - Used for ScrapeGraphAI extraction, evidence chunk embeddings (`text-embedding-3-small`, 1536 dims), and GTM risk analysis (`ANALYSIS_MODEL`). If omitted, extraction still works, chunks get `embedding_status: "missing_provider"`, and analysis uses the deterministic fallback.
+- `ANALYSIS_MODEL` - OpenAI model for GTM risk analysis. Default: `gpt-4o-mini`.
 - `OLLAMA_BASE_URL` - Optional local model endpoint if using an Ollama model.
 
 ### 4. Run migrations
@@ -67,6 +68,7 @@ If using Docker Compose or an empty database, apply the schema migrations in ord
 psql $DATABASE_URL -f migrations/001_initial_schema.sql
 psql $DATABASE_URL -f migrations/002_add_extraction_runs.sql
 psql $DATABASE_URL -f migrations/003_add_evidence_chunks.sql
+psql $DATABASE_URL -f migrations/004_add_analyses.sql
 ```
 
 Migration 001 enables the `vector` pgvector extension. Migration 003 creates the `evidence_chunks` table with a `vector(1536)` embedding column.
@@ -98,6 +100,8 @@ Live product evidence extraction runs the open-source `scrapegraphai` Python lib
 - `GET /runs/{run_id}/evidence` - Fetch the latest extraction result for a run.
 - `GET /runs/{run_id}/evidence/chunks` - Fetch all evidence chunks for a run.
 - `POST /runs/{run_id}/evidence/search` - Search evidence chunks. Body: `{"query": "...", "limit": 10}`. Uses vector similarity when embeddings exist, otherwise falls back to text search.
+- `POST /runs/{run_id}/analyze` - Generate a persisted GTM risk analysis from stored evidence chunks.
+- `GET /runs/{run_id}/analysis` - Fetch the latest analysis for a run.
 
 ## Extraction Flow
 
@@ -128,3 +132,23 @@ Evidence chunks are human-readable citation units derived from each extraction:
 **Fallback behavior**: If `OPENAI_API_KEY` is not set, chunks are stored with `embedding_status: "missing_provider"` and no vector is saved. The search endpoint falls back to text (ILIKE) matching. This behavior is logged and visible in the UI and timeline.
 
 **pgvector**: The `evidence_chunks` table requires the `vector` extension (enabled in migration 001). The `pgvector` Python package (`>= 0.3.0`) provides the SQLAlchemy `Vector` column type.
+
+## GTM Risk Analysis
+
+After evidence chunks are created, trigger analysis with `POST /runs/{run_id}/analyze`. The analyzer reads stored `evidence_chunks` (not the original URL) and returns a structured GTM report.
+
+**Analysis output:**
+- `health_score` (0–100) — overall GTM health
+- `top_risks` — 3–5 risks with severity and evidence citations
+- `issue_themes` — 2–4 recurring patterns from the evidence
+- `listing_quality` — per-field checklist (title, brand, price, bullets, description, specs, warranty)
+- `recommended_actions` — prioritized actions with evidence citations
+- `citations` — chunk IDs and excerpts for every reference
+
+**Provider env vars:**
+- `OPENAI_API_KEY` — used for OpenAI chat completions (JSON mode). Required for AI analysis.
+- `ANALYSIS_MODEL` — OpenAI model. Default: `gpt-4o-mini`.
+
+**Fallback**: If `OPENAI_API_KEY` is absent or the model call fails, a deterministic rule-based analysis is generated from the chunk content. Labeled `provider: "deterministic_fallback"` in the DB response and clearly shown in the UI. Never silently substituted.
+
+**Workflow events**: `analysis_started`, `analysis_completed`, `analysis_fallback_used`, `analysis_failed`.

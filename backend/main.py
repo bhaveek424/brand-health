@@ -12,7 +12,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import engine, AsyncSessionLocal, DATABASE_URL
-from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk
+from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk, Analysis
 from schemas import (
     CreateRunRequest,
     RunResponse,
@@ -23,10 +23,18 @@ from schemas import (
     EvidenceSearchRequest,
     EvidenceSearchResponse,
     EvidenceSearchResult,
+    AnalysisResponse,
+    RiskItem,
+    IssueTheme,
+    ListingQuality,
+    ListingFinding,
+    RecommendedAction,
+    AnalysisCitation,
 )
 from services.scrapegraph import ScrapeGraphService
 from services.chunking import build_chunks
 from services.embeddings import generate_embeddings_batch, EMBEDDING_DIM
+from services.analyzer import analyze_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -603,3 +611,139 @@ async def search_evidence(
             for c in chunks
         ],
     )
+
+
+def _build_analysis_response(a: Analysis) -> AnalysisResponse:
+    lq_raw = a.listing_quality or {}
+    lq = ListingQuality(
+        score=lq_raw.get("score", 0),
+        findings=[ListingFinding(**f) for f in lq_raw.get("findings", [])],
+    )
+    return AnalysisResponse(
+        id=a.id,
+        run_id=a.run_id,
+        status=a.status,
+        provider=a.provider,
+        analysis_model=a.model,
+        health_score=a.health_score,
+        top_risks=[RiskItem(**r) for r in (a.top_risks or [])],
+        issue_themes=[IssueTheme(**t) for t in (a.issue_themes or [])],
+        listing_quality=lq,
+        recommended_actions=[RecommendedAction(**r) for r in (a.recommended_actions or [])],
+        citations=[AnalysisCitation(**c) for c in (a.citations or [])],
+        created_at=a.created_at,
+        updated_at=a.updated_at,
+    )
+
+
+@app.post("/runs/{run_id}/analyze", response_model=AnalysisResponse)
+async def analyze_run(
+    run_id: str, db: AsyncSession = Depends(get_db)
+) -> AnalysisResponse:
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run id format.")
+
+    result = await db.execute(select(Run).where(Run.id == run_uuid))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    chunks_result = await db.execute(
+        select(EvidenceChunk)
+        .where(EvidenceChunk.run_id == run_uuid)
+        .order_by(EvidenceChunk.created_at.asc())
+    )
+    chunk_rows = chunks_result.scalars().all()
+
+    if not chunk_rows:
+        raise HTTPException(
+            status_code=422,
+            detail="No evidence chunks found for this run. Extract evidence first.",
+        )
+
+    db.add(RunEvent(
+        run_id=run.id,
+        event_type="analysis_started",
+        payload={"chunk_count": len(chunk_rows)},
+        created_at=now_utc(),
+    ))
+    await db.commit()
+
+    chunk_dicts = [
+        {"id": str(c.id), "source_type": c.source_type, "content": c.content}
+        for c in chunk_rows
+    ]
+
+    try:
+        analysis_out = await analyze_chunks(chunk_dicts)
+    except Exception as exc:
+        logger.error("analyze_chunks raised unexpectedly: %s", exc)
+        db.add(RunEvent(
+            run_id=run.id,
+            event_type="analysis_failed",
+            payload={"error": str(exc)},
+            created_at=now_utc(),
+        ))
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Analysis failed.")
+
+    ar = analysis_out["result"]
+    analysis = Analysis(
+        run_id=run.id,
+        status="completed",
+        provider=analysis_out["provider"],
+        model=analysis_out["model"],
+        health_score=ar.get("health_score"),
+        top_risks=ar.get("top_risks", []),
+        issue_themes=ar.get("issue_themes", []),
+        listing_quality=ar.get("listing_quality", {}),
+        recommended_actions=ar.get("recommended_actions", []),
+        citations=ar.get("citations", []),
+        raw_response=analysis_out["raw_response"],
+        created_at=now_utc(),
+        updated_at=now_utc(),
+    )
+    db.add(analysis)
+
+    event_type = (
+        "analysis_fallback_used"
+        if analysis_out["provider"] == "deterministic_fallback"
+        else "analysis_completed"
+    )
+    db.add(RunEvent(
+        run_id=run.id,
+        event_type=event_type,
+        payload={
+            "analysis_id": str(analysis.id),
+            "provider": analysis_out["provider"],
+            "health_score": ar.get("health_score"),
+        },
+        created_at=now_utc(),
+    ))
+    await db.commit()
+
+    return _build_analysis_response(analysis)
+
+
+@app.get("/runs/{run_id}/analysis", response_model=Optional[AnalysisResponse])
+async def get_analysis(
+    run_id: str, db: AsyncSession = Depends(get_db)
+) -> Optional[AnalysisResponse]:
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run id format.")
+
+    result = await db.execute(
+        select(Analysis)
+        .where(Analysis.run_id == run_uuid)
+        .order_by(Analysis.created_at.desc())
+        .limit(1)
+    )
+    analysis = result.scalar_one_or_none()
+    if analysis is None:
+        return None
+
+    return _build_analysis_response(analysis)

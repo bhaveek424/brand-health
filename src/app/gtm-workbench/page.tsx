@@ -89,6 +89,61 @@ type EvidenceSearchResponse = {
   results: EvidenceSearchResult[];
 };
 
+type RiskItem = {
+  title: string;
+  severity: "high" | "medium" | "low";
+  description: string;
+  cited_chunk_ids: string[];
+};
+
+type IssueTheme = {
+  theme: string;
+  frequency: "high" | "medium" | "low";
+  description: string;
+  cited_chunk_ids: string[];
+};
+
+type ListingFinding = {
+  field: string;
+  status: "pass" | "warning" | "fail";
+  note: string;
+  cited_chunk_ids: string[];
+};
+
+type ListingQuality = {
+  score: number;
+  findings: ListingFinding[];
+};
+
+type RecommendedAction = {
+  action: string;
+  priority: "high" | "medium" | "low";
+  description: string;
+  cited_chunk_ids: string[];
+};
+
+type AnalysisCitation = {
+  chunk_id: string;
+  source_type: string;
+  excerpt: string;
+};
+
+type Analysis = {
+  id: string;
+  run_id: string;
+  status: string;
+  provider: string;
+  analysis_model?: string;
+  health_score?: number;
+  top_risks: RiskItem[];
+  issue_themes: IssueTheme[];
+  listing_quality: ListingQuality;
+  recommended_actions: RecommendedAction[];
+  citations: AnalysisCitation[];
+  created_at: string;
+  updated_at: string;
+};
+
 function useBackendHealth() {
   const [status, setStatus] = useState<BackendStatus>("offline");
   useEffect(() => {
@@ -154,6 +209,9 @@ function GtmWorkbenchInner() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EvidenceSearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string>("");
 
   const loadRun = useCallback(async (runId: string) => {
     try {
@@ -191,6 +249,39 @@ function GtmWorkbenchInner() {
     }
   }, []);
 
+  const loadAnalysis = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${runId}/analysis`);
+      if (!res.ok) return;
+      const data = (await res.json()) as Analysis | null;
+      setAnalysis(data);
+    } catch {
+      // ignore; analysis may not exist yet
+    }
+  }, []);
+
+  const handleAnalyze = useCallback(async () => {
+    if (!run) return;
+    setAnalyzing(true);
+    setAnalyzeError("");
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${run.id}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = (await res.json()) as { detail?: string } & Partial<Analysis>;
+      if (!res.ok) {
+        throw new Error(data.detail || `Error ${res.status}`);
+      }
+      setAnalysis(data as Analysis);
+      await loadRun(run.id);
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : "Analysis failed");
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [run, loadRun]);
+
   const handleSearch = useCallback(async () => {
     if (!run || !searchQuery.trim()) return;
     setSearching(true);
@@ -218,9 +309,10 @@ function GtmWorkbenchInner() {
       if (r) {
         await loadEvidence(r.id);
         await loadChunks(r.id);
+        await loadAnalysis(r.id);
       }
     })();
-  }, [loadRun, loadEvidence, loadChunks]);
+  }, [loadRun, loadEvidence, loadChunks, loadAnalysis]);
 
   const canRun =
     backendStatus === "connected" && productUrl.trim().length > 0;
@@ -318,6 +410,19 @@ function GtmWorkbenchInner() {
                   {extracting ? "Extracting..." : "Extract Evidence"}
                 </button>
               )}
+              {chunks.length > 0 && (
+                <button
+                  onClick={handleAnalyze}
+                  disabled={analyzing}
+                  className={`px-4 py-2 text-sm font-medium text-white rounded ${
+                    !analyzing
+                      ? "bg-rose-600 hover:bg-rose-500"
+                      : "bg-slate-400 opacity-60 cursor-not-allowed"
+                  }`}
+                >
+                  {analyzing ? "Analyzing..." : "Analyze GTM Risk"}
+                </button>
+              )}
               <Badge variant="info">AI GTM Copilot</Badge>
               {backendBadge}
             </CardBody>
@@ -331,6 +436,11 @@ function GtmWorkbenchInner() {
           {extractError && (
             <div className="rounded border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">
               {extractError}
+            </div>
+          )}
+          {analyzeError && (
+            <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {analyzeError}
             </div>
           )}
 
@@ -572,51 +682,281 @@ function GtmWorkbenchInner() {
             </Card>
           )}
 
-          {/* Placeholder grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader title="Evidence" subtitle="Scraped signals and review highlights" />
-              <CardBody>
-                {evidence ? (
-                  <div className="space-y-2">
-                    <div className="text-sm text-slate-700">{evidence.product_title || "No title"}</div>
-                    <div className="text-xs text-slate-500">Source: {evidence.source}</div>
+          {/* GTM Analysis */}
+          {analysis && (
+            <>
+              {/* Health score + provider */}
+              <Card className="border-l-4 border-l-rose-500">
+                <CardHeader
+                  title="GTM Risk Analysis"
+                  subtitle={
+                    analysis.provider === "deterministic_fallback"
+                      ? "Deterministic fallback — set OPENAI_API_KEY for AI analysis"
+                      : `AI analysis via ${analysis.analysis_model ?? analysis.provider}`
+                  }
+                />
+                <CardBody>
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className={`text-4xl font-bold ${
+                          (analysis.health_score ?? 0) >= 70
+                            ? "text-green-600"
+                            : (analysis.health_score ?? 0) >= 50
+                            ? "text-amber-600"
+                            : "text-red-600"
+                        }`}
+                      >
+                        {analysis.health_score ?? "—"}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">Health Score / 100</div>
+                    </div>
+                    <div className="flex-1 grid grid-cols-3 gap-3 text-center">
+                      <div className="border border-slate-200 rounded p-2">
+                        <div className="text-lg font-semibold text-slate-800">{analysis.top_risks.length}</div>
+                        <div className="text-xs text-slate-500">Risks</div>
+                      </div>
+                      <div className="border border-slate-200 rounded p-2">
+                        <div className="text-lg font-semibold text-slate-800">{analysis.issue_themes.length}</div>
+                        <div className="text-xs text-slate-500">Themes</div>
+                      </div>
+                      <div className="border border-slate-200 rounded p-2">
+                        <div className="text-lg font-semibold text-slate-800">{analysis.listing_quality?.score ?? "—"}</div>
+                        <div className="text-xs text-slate-500">Listing QA</div>
+                      </div>
+                    </div>
+                    <span
+                      className={`text-xs font-medium px-2 py-1 rounded ${
+                        analysis.provider === "deterministic_fallback"
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-green-100 text-green-700"
+                      }`}
+                    >
+                      {analysis.provider === "deterministic_fallback" ? "Fallback" : "AI"}
+                    </span>
                   </div>
-                ) : (
+                </CardBody>
+              </Card>
+
+              {/* 4-panel grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Risks */}
+                <Card>
+                  <CardHeader title="Risks" subtitle="Detected brand and commercial risks" />
+                  <CardBody>
+                    {analysis.top_risks.length === 0 ? (
+                      <div className="text-sm text-slate-400 italic">No risks detected.</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {analysis.top_risks.map((risk, i) => (
+                          <div key={i} className="border border-slate-200 rounded p-3">
+                            <div className="flex items-start gap-2 mb-1">
+                              <span
+                                className={`shrink-0 text-xs font-medium px-1.5 py-0.5 rounded ${
+                                  risk.severity === "high"
+                                    ? "bg-red-100 text-red-700"
+                                    : risk.severity === "medium"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {risk.severity}
+                              </span>
+                              <div className="text-sm font-medium text-slate-800">{risk.title}</div>
+                            </div>
+                            <div className="text-xs text-slate-600">{risk.description}</div>
+                            {risk.cited_chunk_ids.length > 0 && (
+                              <div className="mt-1.5 text-xs text-slate-400">
+                                Evidence: {risk.cited_chunk_ids.map((id) => id.slice(0, 8)).join(", ")}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
+
+                {/* Listing QA */}
+                <Card>
+                  <CardHeader
+                    title="Listing QA"
+                    subtitle={`Content quality score: ${analysis.listing_quality?.score ?? "—"} / 100`}
+                  />
+                  <CardBody>
+                    {!analysis.listing_quality?.findings?.length ? (
+                      <div className="text-sm text-slate-400 italic">No findings.</div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {analysis.listing_quality.findings.map((f, i) => (
+                          <div key={i} className="flex items-start gap-2 text-sm">
+                            <span
+                              className={`shrink-0 text-xs font-bold w-4 ${
+                                f.status === "pass"
+                                  ? "text-green-600"
+                                  : f.status === "warning"
+                                  ? "text-amber-500"
+                                  : "text-red-600"
+                              }`}
+                            >
+                              {f.status === "pass" ? "✓" : f.status === "warning" ? "⚠" : "✗"}
+                            </span>
+                            <div>
+                              <span className="font-medium text-slate-700 capitalize">{f.field}</span>
+                              <span className="text-slate-500 ml-1">— {f.note}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
+
+                {/* Issue themes */}
+                <Card>
+                  <CardHeader title="Issue Themes" subtitle="Recurring patterns in evidence" />
+                  <CardBody>
+                    {analysis.issue_themes.length === 0 ? (
+                      <div className="text-sm text-slate-400 italic">No themes detected.</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {analysis.issue_themes.map((theme, i) => (
+                          <div key={i} className="border border-slate-200 rounded p-3">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span
+                                className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                                  theme.frequency === "high"
+                                    ? "bg-red-100 text-red-700"
+                                    : theme.frequency === "medium"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {theme.frequency}
+                              </span>
+                              <div className="text-sm font-medium text-slate-800">{theme.theme}</div>
+                            </div>
+                            <div className="text-xs text-slate-600">{theme.description}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
+
+                {/* Recommended actions */}
+                <Card>
+                  <CardHeader title="Recommended Actions" subtitle="Prioritized GTM improvements" />
+                  <CardBody>
+                    {analysis.recommended_actions.length === 0 ? (
+                      <div className="text-sm text-slate-400 italic">No actions generated.</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {analysis.recommended_actions.map((action, i) => (
+                          <div key={i} className="border border-slate-200 rounded p-3">
+                            <div className="flex items-start gap-2 mb-1">
+                              <span
+                                className={`shrink-0 text-xs font-medium px-1.5 py-0.5 rounded ${
+                                  action.priority === "high"
+                                    ? "bg-red-100 text-red-700"
+                                    : action.priority === "medium"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-slate-100 text-slate-600"
+                                }`}
+                              >
+                                {action.priority}
+                              </span>
+                              <div className="text-sm font-medium text-slate-800">{action.action}</div>
+                            </div>
+                            <div className="text-xs text-slate-600">{action.description}</div>
+                            {action.cited_chunk_ids.length > 0 && (
+                              <div className="mt-1.5 text-xs text-slate-400">
+                                Evidence: {action.cited_chunk_ids.map((id) => id.slice(0, 8)).join(", ")}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
+              </div>
+
+              {/* Citations */}
+              {analysis.citations.length > 0 && (
+                <Card>
+                  <CardHeader
+                    title={`Citations (${analysis.citations.length})`}
+                    subtitle="Evidence chunk references used in this analysis"
+                  />
+                  <CardBody>
+                    <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                      {analysis.citations.map((c, i) => (
+                        <div key={i} className="flex items-start gap-2 text-xs">
+                          <span className="shrink-0 font-mono text-slate-400">{c.chunk_id.slice(0, 8)}</span>
+                          <span className="shrink-0 bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                            {c.source_type}
+                          </span>
+                          <span className="text-slate-600 line-clamp-1">{c.excerpt}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </CardBody>
+                </Card>
+              )}
+            </>
+          )}
+
+          {/* Placeholder grid — shown when no analysis yet */}
+          {!analysis && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader title="Evidence" subtitle="Scraped signals and review highlights" />
+                <CardBody>
+                  {evidence ? (
+                    <div className="space-y-2">
+                      <div className="text-sm text-slate-700">{evidence.product_title || "No title"}</div>
+                      <div className="text-xs text-slate-500">Source: {evidence.source}</div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-slate-400 italic">
+                      Evidence panel will populate after intake run.
+                    </div>
+                  )}
+                </CardBody>
+              </Card>
+              <Card>
+                <CardHeader title="Risks" subtitle="Detected brand and commercial risks" />
+                <CardBody>
                   <div className="text-sm text-slate-400 italic">
-                    Evidence panel will populate after intake run.
+                    {chunks.length > 0
+                      ? "Click “Analyze GTM Risk” to generate analysis."
+                      : "Risks panel will populate after intake run."}
                   </div>
-                )}
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader title="Risks" subtitle="Detected brand and commercial risks" />
-              <CardBody>
-                <div className="text-sm text-slate-400 italic">
-                  Risks panel will populate after intake run.
-                </div>
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader title="Listing QA" subtitle="Content gaps and optimization notes" />
-              <CardBody>
-                <div className="text-sm text-slate-400 italic">
-                  Listing QA panel will populate after intake run.
-                </div>
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardHeader title="Action Drafts" subtitle="AI-generated replies and escalations" />
-              <CardBody>
-                <div className="text-sm text-slate-400 italic">
-                  Drafts panel will populate after intake run.
-                </div>
-              </CardBody>
-            </Card>
-          </div>
+                </CardBody>
+              </Card>
+              <Card>
+                <CardHeader title="Listing QA" subtitle="Content gaps and optimization notes" />
+                <CardBody>
+                  <div className="text-sm text-slate-400 italic">
+                    {chunks.length > 0
+                      ? "Click “Analyze GTM Risk” to generate analysis."
+                      : "Listing QA panel will populate after intake run."}
+                  </div>
+                </CardBody>
+              </Card>
+              <Card>
+                <CardHeader title="Recommended Actions" subtitle="AI-generated GTM improvements" />
+                <CardBody>
+                  <div className="text-sm text-slate-400 italic">
+                    {chunks.length > 0
+                      ? "Click “Analyze GTM Risk” to generate analysis."
+                      : "Actions panel will populate after intake run."}
+                  </div>
+                </CardBody>
+              </Card>
+            </div>
+          )}
         </div>
 
         {/* Right sidebar */}
