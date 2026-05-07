@@ -90,6 +90,8 @@ The backend requires Postgres (with pgvector) for run persistence. Quick local o
 cd backend
 docker compose up -d
 psql postgresql://gtmcopilot:gtmcopilot@localhost:5432/gtmcopilot -f migrations/001_initial_schema.sql
+psql postgresql://gtmcopilot:gtmcopilot@localhost:5432/gtmcopilot -f migrations/002_add_extraction_runs.sql
+psql postgresql://gtmcopilot:gtmcopilot@localhost:5432/gtmcopilot -f migrations/003_add_evidence_chunks.sql
 ```
 
 For full backend setup details, see `backend/README.md`.
@@ -98,10 +100,14 @@ The backend exposes:
 - `GET /health`
 - `POST /runs`
 - `GET /runs/{run_id}`
-- `POST /runs/{run_id}/extract` - Live product evidence extraction via open-source ScrapeGraphAI
+- `POST /runs/{run_id}/extract` - Live product evidence extraction via open-source ScrapeGraphAI; also creates evidence chunks and embeddings
 - `GET /runs/{run_id}/evidence` - Fetch extracted evidence for a run
+- `GET /runs/{run_id}/evidence/chunks` - Fetch all evidence chunks for a run
+- `POST /runs/{run_id}/evidence/search` - Search evidence chunks (vector search or text fallback)
 
 The extraction path uses the open-source `scrapegraphai` Python library locally inside our FastAPI backend. It does not call ScrapeGraphAI Cloud and does not require a ScrapeGraphAI platform API key. The backend still needs an LLM provider key or a local model such as Ollama.
+
+Evidence chunk embeddings use OpenAI `text-embedding-3-small` (1536 dims) if `OPENAI_API_KEY` is set. Without a key, chunks are stored without embeddings (`embedding_status: "missing_provider"`) and search falls back to text matching.
 
 ## Useful Routes
 

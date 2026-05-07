@@ -4,6 +4,13 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from database import Base
 
+try:
+    from pgvector.sqlalchemy import Vector as _Vector  # type: ignore[import]
+    _PGVECTOR_AVAILABLE = True
+except ImportError:
+    _Vector = None
+    _PGVECTOR_AVAILABLE = False
+
 
 def now_utc():
     return datetime.now(timezone.utc)
@@ -80,3 +87,39 @@ class ExtractionRun(Base):
     extraction_quality = Column(JSONB, default=dict)
     created_at = Column(DateTime(timezone=True), default=now_utc)
     updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class EvidenceChunk(Base):
+    """
+    A retrievable, citation-ready text unit derived from an ExtractionRun.
+    Embedding dimension: 1536 (OpenAI text-embedding-3-small).
+    embedding_status: "live" | "missing_provider" | "failed"
+    """
+
+    __tablename__ = "evidence_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    extraction_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("extraction_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_type = Column(String, nullable=False)
+    source_url = Column(String, nullable=False)
+    content = Column(String, nullable=False)
+    chunk_metadata = Column("metadata", JSONB, default=dict)
+    embedding = Column(_Vector(1536) if _PGVECTOR_AVAILABLE else JSONB, nullable=True)
+    embedding_status = Column(String, nullable=False, default="pending")
+    created_at = Column(DateTime(timezone=True), default=now_utc)

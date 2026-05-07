@@ -3,23 +3,32 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import re
 import uuid
-from typing import Optional
+import logging
+from typing import Optional, List
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import engine, AsyncSessionLocal, DATABASE_URL
-from models import Base, Product, Run, RunEvent, ExtractionRun
+from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk
 from schemas import (
     CreateRunRequest,
     RunResponse,
     RunEventResponse,
     ExtractionRunResponse,
     ExtractionQuality,
+    EvidenceChunkResponse,
+    EvidenceSearchRequest,
+    EvidenceSearchResponse,
+    EvidenceSearchResult,
 )
 from services.scrapegraph import ScrapeGraphService
+from services.chunking import build_chunks
+from services.embeddings import generate_embeddings_batch, EMBEDDING_DIM
+
+logger = logging.getLogger(__name__)
 
 
 def now_utc():
@@ -204,6 +213,107 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)) -> RunRespons
     )
 
 
+async def _chunk_and_embed(
+    db: AsyncSession,
+    run: Run,
+    extraction_run: ExtractionRun,
+) -> None:
+    """Create evidence chunks and embed them. Emits workflow events. Never raises."""
+    try:
+        # evidence_chunking_started
+        db.add(RunEvent(
+            run_id=run.id,
+            event_type="evidence_chunking_started",
+            payload={"extraction_run_id": str(extraction_run.id)},
+            created_at=now_utc(),
+        ))
+        await db.commit()
+
+        chunk_dicts = build_chunks(extraction_run)
+        source_url = extraction_run.input_url
+
+        if not chunk_dicts:
+            db.add(RunEvent(
+                run_id=run.id,
+                event_type="evidence_chunks_created",
+                payload={"count": 0, "extraction_run_id": str(extraction_run.id)},
+                created_at=now_utc(),
+            ))
+            await db.commit()
+            return
+
+        # evidence_chunks_created
+        db.add(RunEvent(
+            run_id=run.id,
+            event_type="evidence_chunks_created",
+            payload={"count": len(chunk_dicts), "extraction_run_id": str(extraction_run.id)},
+            created_at=now_utc(),
+        ))
+        await db.commit()
+
+        # Generate embeddings for all chunks
+        db.add(RunEvent(
+            run_id=run.id,
+            event_type="embedding_started",
+            payload={"chunk_count": len(chunk_dicts)},
+            created_at=now_utc(),
+        ))
+        await db.commit()
+
+        texts = [c["content"] for c in chunk_dicts]
+        embedding_results = await generate_embeddings_batch(texts)
+
+        # Determine overall embedding status
+        statuses = [s for _, s in embedding_results]
+        if all(s == "missing_provider" for s in statuses):
+            embed_event = "embedding_skipped"
+            embed_payload: dict = {"reason": "missing_provider", "chunk_count": len(chunk_dicts)}
+        elif all(s == "failed" for s in statuses):
+            embed_event = "embedding_failed"
+            embed_payload = {"reason": "all_failed", "chunk_count": len(chunk_dicts)}
+        else:
+            live_count = sum(1 for s in statuses if s == "live")
+            embed_event = "embedding_completed"
+            embed_payload = {"live_count": live_count, "chunk_count": len(chunk_dicts)}
+
+        # Persist chunks
+        for chunk_dict, (vector, emb_status) in zip(chunk_dicts, embedding_results):
+            chunk = EvidenceChunk(
+                run_id=run.id,
+                product_id=run.product_id,
+                extraction_run_id=extraction_run.id,
+                source_type=chunk_dict["source_type"],
+                source_url=source_url,
+                content=chunk_dict["content"],
+                chunk_metadata=chunk_dict["metadata"],
+                embedding=vector,
+                embedding_status=emb_status,
+                created_at=now_utc(),
+            )
+            db.add(chunk)
+
+        db.add(RunEvent(
+            run_id=run.id,
+            event_type=embed_event,
+            payload=embed_payload,
+            created_at=now_utc(),
+        ))
+        await db.commit()
+
+    except Exception as exc:
+        logger.error("Chunking/embedding failed for run %s: %s", run.id, exc)
+        try:
+            db.add(RunEvent(
+                run_id=run.id,
+                event_type="embedding_failed",
+                payload={"error": str(exc)},
+                created_at=now_utc(),
+            ))
+            await db.commit()
+        except Exception:
+            pass
+
+
 @app.post("/runs/{run_id}/extract", response_model=ExtractionRunResponse)
 async def extract_evidence(run_id: str, db: AsyncSession = Depends(get_db)) -> ExtractionRunResponse:
     try:
@@ -272,6 +382,9 @@ async def extract_evidence(run_id: str, db: AsyncSession = Depends(get_db)) -> E
         )
         db.add(completed_event)
         await db.commit()
+
+        # Chunk and embed (best-effort; does not fail the extraction response)
+        await _chunk_and_embed(db, run, extraction_run)
     else:
         failed_event = RunEvent(
             run_id=run.id,
@@ -364,4 +477,129 @@ async def get_evidence(run_id: str, db: AsyncSession = Depends(get_db)) -> Optio
         ),
         created_at=ex.created_at,
         updated_at=ex.updated_at,
+    )
+
+
+@app.get("/runs/{run_id}/evidence/chunks", response_model=List[EvidenceChunkResponse])
+async def get_evidence_chunks(
+    run_id: str, db: AsyncSession = Depends(get_db)
+) -> List[EvidenceChunkResponse]:
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run id format.")
+
+    result = await db.execute(
+        select(EvidenceChunk)
+        .where(EvidenceChunk.run_id == run_uuid)
+        .order_by(EvidenceChunk.created_at.asc())
+    )
+    chunks = result.scalars().all()
+
+    return [
+        EvidenceChunkResponse(
+            id=c.id,
+            run_id=c.run_id,
+            product_id=c.product_id,
+            extraction_run_id=c.extraction_run_id,
+            source_type=c.source_type,
+            source_url=c.source_url,
+            content=c.content,
+            metadata=c.chunk_metadata or {},
+            embedding_status=c.embedding_status,
+            created_at=c.created_at,
+        )
+        for c in chunks
+    ]
+
+
+@app.post("/runs/{run_id}/evidence/search", response_model=EvidenceSearchResponse)
+async def search_evidence(
+    run_id: str,
+    body: EvidenceSearchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> EvidenceSearchResponse:
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run id format.")
+
+    query = body.query.strip()
+    limit = body.limit
+
+    # Check if any chunks for this run have live embeddings
+    live_check = await db.execute(
+        select(EvidenceChunk)
+        .where(EvidenceChunk.run_id == run_uuid)
+        .where(EvidenceChunk.embedding_status == "live")
+        .limit(1)
+    )
+    has_live_embeddings = live_check.scalar_one_or_none() is not None
+
+    if has_live_embeddings:
+        # Vector similarity search via pgvector cosine distance
+        from services.embeddings import generate_embedding
+        from models import _PGVECTOR_AVAILABLE
+
+        query_vec, q_status = await generate_embedding(query)
+        if query_vec is not None and _PGVECTOR_AVAILABLE:
+            try:
+                distance_col = EvidenceChunk.embedding.cosine_distance(query_vec).label("distance")
+                sim_result = await db.execute(
+                    select(EvidenceChunk, distance_col)
+                    .where(EvidenceChunk.run_id == run_uuid)
+                    .where(EvidenceChunk.embedding_status == "live")
+                    .order_by("distance")
+                    .limit(limit)
+                )
+                rows = sim_result.all()
+                return EvidenceSearchResponse(
+                    query=query,
+                    search_mode="vector",
+                    results=[
+                        EvidenceSearchResult(
+                            id=c.id,
+                            run_id=c.run_id,
+                            source_type=c.source_type,
+                            source_url=c.source_url,
+                            content=c.content,
+                            metadata=c.chunk_metadata or {},
+                            embedding_status=c.embedding_status,
+                            score=round(1.0 - float(dist), 4) if dist is not None else None,
+                            search_mode="vector",
+                        )
+                        for c, dist in rows
+                    ],
+                )
+            except Exception as exc:
+                logger.warning("Vector search failed, falling back to text: %s", exc)
+
+    # Text fallback: ILIKE on content
+    ilike_pattern = f"%{query}%"
+    text_result = await db.execute(
+        select(EvidenceChunk)
+        .where(EvidenceChunk.run_id == run_uuid)
+        .where(EvidenceChunk.content.ilike(ilike_pattern))
+        .order_by(EvidenceChunk.created_at.asc())
+        .limit(limit)
+    )
+    chunks = text_result.scalars().all()
+
+    return EvidenceSearchResponse(
+        query=query,
+        search_mode="text",
+        results=[
+            EvidenceSearchResult(
+                id=c.id,
+                run_id=c.run_id,
+                source_type=c.source_type,
+                source_url=c.source_url,
+                content=c.content,
+                metadata=c.chunk_metadata or {},
+                embedding_status=c.embedding_status,
+                score=None,
+                search_mode="text",
+            )
+            for c in chunks
+        ],
     )

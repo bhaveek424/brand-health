@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Literal
 from datetime import datetime
 from uuid import UUID
 
@@ -62,3 +62,41 @@ class ExtractionRunResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class EvidenceChunkResponse(BaseModel):
+    id: UUID
+    run_id: UUID
+    product_id: Optional[UUID] = None
+    extraction_run_id: Optional[UUID] = None
+    source_type: str
+    source_url: str
+    content: str
+    metadata: dict = Field(default_factory=dict)
+    embedding_status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class EvidenceSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, description="Search query text")
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class EvidenceSearchResult(BaseModel):
+    id: UUID
+    run_id: UUID
+    source_type: str
+    source_url: str
+    content: str
+    metadata: dict = Field(default_factory=dict)
+    embedding_status: str
+    score: Optional[float] = None
+    search_mode: Literal["vector", "text"]
+
+
+class EvidenceSearchResponse(BaseModel):
+    query: str
+    search_mode: Literal["vector", "text"]
+    results: List[EvidenceSearchResult] = Field(default_factory=list)

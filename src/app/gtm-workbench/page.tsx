@@ -58,6 +58,37 @@ type Evidence = {
   updated_at: string;
 };
 
+type EvidenceChunk = {
+  id: string;
+  run_id: string;
+  product_id?: string;
+  extraction_run_id?: string;
+  source_type: string;
+  source_url: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  embedding_status: string;
+  created_at: string;
+};
+
+type EvidenceSearchResult = {
+  id: string;
+  run_id: string;
+  source_type: string;
+  source_url: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  embedding_status: string;
+  score?: number;
+  search_mode: "vector" | "text";
+};
+
+type EvidenceSearchResponse = {
+  query: string;
+  search_mode: "vector" | "text";
+  results: EvidenceSearchResult[];
+};
+
 function useBackendHealth() {
   const [status, setStatus] = useState<BackendStatus>("offline");
   useEffect(() => {
@@ -119,6 +150,10 @@ function GtmWorkbenchInner() {
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string>("");
+  const [chunks, setChunks] = useState<EvidenceChunk[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<EvidenceSearchResponse | null>(null);
+  const [searching, setSearching] = useState(false);
 
   const loadRun = useCallback(async (runId: string) => {
     try {
@@ -145,14 +180,47 @@ function GtmWorkbenchInner() {
     }
   }, []);
 
+  const loadChunks = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${runId}/evidence/chunks`);
+      if (!res.ok) return;
+      const data = (await res.json()) as EvidenceChunk[];
+      setChunks(data);
+    } catch {
+      // ignore; chunks may not exist yet
+    }
+  }, []);
+
+  const handleSearch = useCallback(async () => {
+    if (!run || !searchQuery.trim()) return;
+    setSearching(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${run.id}/evidence/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: searchQuery.trim(), limit: 10 }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as EvidenceSearchResponse;
+      setSearchResults(data);
+    } catch {
+      // ignore
+    } finally {
+      setSearching(false);
+    }
+  }, [run, searchQuery]);
+
   useEffect(() => {
     const runId = getRunIdFromUrl();
     if (!runId) return;
     void (async () => {
       const r = await loadRun(runId);
-      if (r) await loadEvidence(r.id);
+      if (r) {
+        await loadEvidence(r.id);
+        await loadChunks(r.id);
+      }
     })();
-  }, [loadRun, loadEvidence]);
+  }, [loadRun, loadEvidence, loadChunks]);
 
   const canRun =
     backendStatus === "connected" && productUrl.trim().length > 0;
@@ -195,14 +263,15 @@ function GtmWorkbenchInner() {
         throw new Error(data.detail || `Error ${res.status}`);
       }
       setEvidence(data as Evidence);
-      // Refresh run/events
+      // Refresh run/events and chunks
       await loadRun(run.id);
+      await loadChunks(run.id);
     } catch (err) {
       setExtractError(err instanceof Error ? err.message : "Extraction failed");
     } finally {
       setExtracting(false);
     }
-  }, [run, loadRun]);
+  }, [run, loadRun, loadChunks]);
 
   const backendBadge = {
     connected: <Badge variant="success">Backend Connected</Badge>,
@@ -378,6 +447,126 @@ function GtmWorkbenchInner() {
                       )}
                     </div>
                   )}
+                </div>
+              </CardBody>
+            </Card>
+          )}
+
+          {/* Evidence Chunks */}
+          {chunks.length > 0 && (
+            <Card className="border-l-4 border-l-violet-500">
+              <CardHeader
+                title={`Evidence Chunks (${chunks.length})`}
+                subtitle="Retrievable citation units from extracted evidence"
+              />
+              <CardBody>
+                {/* Embedding status summary */}
+                {(() => {
+                  const liveCount = chunks.filter((c) => c.embedding_status === "live").length;
+                  const missingCount = chunks.filter((c) => c.embedding_status === "missing_provider").length;
+                  const failedCount = chunks.filter((c) => c.embedding_status === "failed").length;
+                  let statusLabel = "";
+                  let statusClass = "";
+                  if (liveCount === chunks.length) {
+                    statusLabel = `Embeddings: live (${liveCount}/${chunks.length})`;
+                    statusClass = "text-green-700 bg-green-50 border-green-200";
+                  } else if (missingCount === chunks.length) {
+                    statusLabel = "Embeddings: not generated (set OPENAI_API_KEY to enable semantic search)";
+                    statusClass = "text-slate-500 bg-slate-50 border-slate-200";
+                  } else if (failedCount === chunks.length) {
+                    statusLabel = "Embeddings: failed";
+                    statusClass = "text-red-600 bg-red-50 border-red-200";
+                  } else {
+                    statusLabel = `Embeddings: ${liveCount} live, ${missingCount} missing, ${failedCount} failed`;
+                    statusClass = "text-amber-700 bg-amber-50 border-amber-200";
+                  }
+                  return (
+                    <div className={`mb-3 rounded border px-3 py-2 text-xs font-medium ${statusClass}`}>
+                      {statusLabel}
+                    </div>
+                  );
+                })()}
+
+                {/* Search box */}
+                <div className="flex gap-2 mb-3">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void handleSearch(); }}
+                    placeholder="Search evidence chunks..."
+                    className="flex-1 px-3 py-1.5 border border-slate-300 rounded text-sm"
+                  />
+                  <button
+                    onClick={() => void handleSearch()}
+                    disabled={searching || !searchQuery.trim()}
+                    className={`px-3 py-1.5 text-sm font-medium text-white rounded ${
+                      !searching && searchQuery.trim()
+                        ? "bg-violet-600 hover:bg-violet-500"
+                        : "bg-slate-400 opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    {searching ? "..." : "Search"}
+                  </button>
+                </div>
+
+                {/* Search results */}
+                {searchResults && (
+                  <div className="mb-3 border border-violet-200 rounded bg-violet-50 p-3">
+                    <div className="text-xs text-violet-600 font-medium mb-2">
+                      Search: &quot;{searchResults.query}&quot; &mdash; {searchResults.results.length} result{searchResults.results.length !== 1 ? "s" : ""} ({searchResults.search_mode} mode)
+                    </div>
+                    {searchResults.results.length === 0 ? (
+                      <div className="text-xs text-slate-500">No matching chunks.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {searchResults.results.map((r) => (
+                          <div key={r.id} className="bg-white border border-violet-100 rounded p-2">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-medium text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded">
+                                {r.source_type}
+                              </span>
+                              {r.score != null && (
+                                <span className="text-xs text-slate-500">score: {r.score}</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-700 line-clamp-3">{r.content}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Chunk list */}
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {chunks.map((chunk) => (
+                    <div key={chunk.id} className="border border-slate-200 rounded p-2 bg-white">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="text-xs font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                          {chunk.source_type}
+                        </span>
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${
+                          chunk.embedding_status === "live"
+                            ? "bg-green-100 text-green-700"
+                            : chunk.embedding_status === "missing_provider"
+                            ? "bg-slate-100 text-slate-500"
+                            : "bg-red-100 text-red-600"
+                        }`}>
+                          {chunk.embedding_status === "live" ? "embedded" : chunk.embedding_status === "missing_provider" ? "no embedding" : "embed failed"}
+                        </span>
+                        {Object.keys(chunk.metadata).length > 0 && (
+                          <span className="text-xs text-slate-400">
+                            {Object.entries(chunk.metadata)
+                              .filter(([k]) => k !== "confidence")
+                              .map(([k, v]) => `${k}: ${String(v)}`)
+                              .join(" | ")}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-700 line-clamp-2">{chunk.content}</div>
+                    </div>
+                  ))}
                 </div>
               </CardBody>
             </Card>

@@ -63,6 +63,8 @@ FastAPI endpoints:
 - `GET /runs/{run_id}`
 - `POST /runs/{run_id}/extract`
 - `GET /runs/{run_id}/evidence`
+- `GET /runs/{run_id}/evidence/chunks`
+- `POST /runs/{run_id}/evidence/search`
 
 Persistence:
 
@@ -70,6 +72,7 @@ Persistence:
 - `runs`
 - `run_events`
 - `extraction_runs`
+- `evidence_chunks` (pgvector, 1536-dim embeddings via OpenAI text-embedding-3-small)
 
 ## Environment
 
@@ -95,3 +98,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 - Action drafts.
 - Real email, Slack, ticket, or marketplace reply connectors.
 - Hosted ScrapeGraphAI Cloud integration.
+
+## Completed: Issue 015 - Evidence Chunks and Embeddings
+
+After extraction, the backend chunks normalized product evidence into retrievable citation units stored in `evidence_chunks`. Each chunk covers one logical field (summary, bullet, description, spec, warranty, review snippet, quality warnings). Embeddings use OpenAI `text-embedding-3-small` (1536 dims) when `OPENAI_API_KEY` is set. Without a key, chunks are stored with `embedding_status: "missing_provider"` and search falls back to text matching. The `/gtm-workbench` UI shows chunks, embedding status, and a search box.
