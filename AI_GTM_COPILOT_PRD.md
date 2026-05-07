@@ -108,6 +108,18 @@ OLLAMA_BASE_URL=http://localhost:11434
 - Real email, Slack, ticket, or marketplace reply connectors.
 - Hosted ScrapeGraphAI Cloud integration.
 
+## Completed: Issue 020 - Register Tambo UI Components for Run Results
+
+Issue 020 upgrades the copilot from text-only responses to generative UI. Five renderable components are registered with `TamboProvider` via the `components` prop (each with a Zod `propsSchema`):
+
+- **RunStatusCard** (`src/components/copilot/RunStatusCard.tsx`) — run ID, status badge, input URL, recent workflow events timeline.
+- **EvidencePackCard** (`src/components/copilot/EvidencePackCard.tsx`) — product title, brand, price, rating, summary, chunk count, embedding status. Graceful empty state when no evidence extracted.
+- **RiskSummaryCards** (`src/components/copilot/RiskSummaryCards.tsx`) — GTM health score, top risks with severity badges, issue themes. Fallback label when provider is `deterministic_fallback`.
+- **ListingQACard** (`src/components/copilot/ListingQACard.tsx`) — listing quality score, per-field pass/warning/fail findings with colour coding.
+- **ActionDraftCards** (`src/components/copilot/ActionDraftCards.tsx`) — action drafts with type label, target system, status badge, title, evidence ref count. Empty state when no drafts.
+
+Three new tools added to `CopilotPanel.tsx`: `getEvidencePack` (calls `/evidence` + `/evidence/chunks`), `getGtmAnalysis` (calls `/analysis`), `getActionDrafts` (calls `/actions`). All three: accept optional `run_id` (fall back to active run), wrap fetch in try/catch, return structured errors on backend-offline or no-run states, normalise enum values before returning. Message rendering updated to handle `type === "component"` content blocks via `block.renderedComponent`. Empty state updated with prompt hints for all four copilot queries.
+
 ## Completed: Issue 019 - Tambo Copilot Shell and Run Tools
 
 Issue 019 adds the Tambo-powered AI Copilot panel to the `/gtm-workbench` right sidebar. `src/components/CopilotPanel.tsx` is a self-contained `"use client"` component that wraps its own `TamboProvider` (scoped, not in root layout). It accepts `onRunCreated`, `onRunLoaded`, and `currentRun` props. Two tools are registered via `registerTools` in a `useEffect`: `createRunFromUrl` (calls `POST /runs`, invokes `onRunCreated` to update page state) and `getRunStatus` (calls `GET /runs/{id}`, invokes `onRunLoaded`). Tool state updates drive the same run/event timeline as manual UI controls — both paths are unified. Messages are rendered by filtering content blocks for `type === "text"`. Without `NEXT_PUBLIC_TAMBO_API_KEY`, the panel renders a configuration prompt rather than crashing. The `GtmWorkbenchInner` component adds `handleRunCreated` (full downstream state clear + URL sync) and `handleRunLoaded` (run state refresh) callbacks, passed as props to `CopilotPanel`.
