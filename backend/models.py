@@ -125,6 +125,35 @@ class EvidenceChunk(Base):
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
 
+class ActionDraft(Base):
+    """Approval-mode action draft generated from a GTM risk analysis. Never sent automatically."""
+
+    __tablename__ = "action_drafts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    analysis_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    draft_type = Column(String, nullable=False)
+    target_system = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="draft")
+    title = Column(String, nullable=False)
+    body = Column(String, nullable=False)
+    payload = Column(JSONB, default=dict)
+    evidence_ids = Column(JSONB, default=list)
+    created_at = Column(DateTime(timezone=True), default=now_utc)
+    updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
 class Analysis(Base):
     """Persisted GTM risk analysis derived from evidence chunks for a run."""
 

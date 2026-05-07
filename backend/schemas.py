@@ -157,3 +157,22 @@ class AnalysisResponse(BaseModel):
     citations: List[AnalysisCitation] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+# --- Action draft schemas ---
+
+class ActionDraftResponse(BaseModel):
+    id: UUID
+    run_id: UUID
+    analysis_id: Optional[UUID] = None
+    draft_type: str
+    target_system: str
+    status: str
+    title: str
+    body: str
+    payload: dict = Field(default_factory=dict)
+    evidence_ids: List[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

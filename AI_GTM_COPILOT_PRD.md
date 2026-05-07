@@ -67,6 +67,8 @@ FastAPI endpoints:
 - `POST /runs/{run_id}/evidence/search`
 - `POST /runs/{run_id}/analyze`
 - `GET /runs/{run_id}/analysis`
+- `POST /runs/{run_id}/actions/generate`
+- `GET /runs/{run_id}/actions`
 
 Persistence:
 
@@ -76,6 +78,7 @@ Persistence:
 - `extraction_runs`
 - `evidence_chunks` (pgvector, 1536-dim embeddings via OpenAI text-embedding-3-small)
 - `analyses` (GTM risk analysis: health score, risks, themes, listing QA, actions, citations)
+- `action_drafts` (approval-mode drafts: type, target system, title, body, payload, evidence IDs)
 
 ## Environment
 
@@ -101,6 +104,10 @@ OLLAMA_BASE_URL=http://localhost:11434
 - Action drafts.
 - Real email, Slack, ticket, or marketplace reply connectors.
 - Hosted ScrapeGraphAI Cloud integration.
+
+## Completed: Issue 017 - Approval-Mode Action Drafts
+
+Issue 017 adds approval-mode action draft generation from a completed GTM risk analysis. `POST /runs/{run_id}/actions/generate` loads the latest `Analysis` row, calls `services/action_drafts.generate_drafts()` (deterministic, no external API calls), and persists results in the `action_drafts` table. Up to 6 draft types are generated: `supplier_escalation`, `listing_update_brief`, `brand_partner_update`, `internal_ops_update`, `customer_reply` (when review evidence exists), and `ops_ticket` (when systemic risks or low listing QA). All drafts have `status: "draft"` — nothing is sent. The endpoint is idempotent per analysis. `GET /runs/{run_id}/actions` returns drafts for the latest analysis (reload-safe). Workflow events: `action_drafts_started`, `action_drafts_created`, `action_drafts_failed`. The `/gtm-workbench` UI renders expandable draft cards with type badge, target system, status badges ("Draft only", "Approval required", "Not sent"), body preview, and cited evidence IDs.
 
 ## Completed: Issue 016 - GTM Risk Analysis
 

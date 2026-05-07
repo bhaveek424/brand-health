@@ -69,9 +69,10 @@ psql $DATABASE_URL -f migrations/001_initial_schema.sql
 psql $DATABASE_URL -f migrations/002_add_extraction_runs.sql
 psql $DATABASE_URL -f migrations/003_add_evidence_chunks.sql
 psql $DATABASE_URL -f migrations/004_add_analyses.sql
+psql $DATABASE_URL -f migrations/005_add_action_drafts.sql
 ```
 
-Migration 001 enables the `vector` pgvector extension. Migration 003 creates the `evidence_chunks` table with a `vector(1536)` embedding column.
+Migration 001 enables the `vector` pgvector extension. Migration 003 creates the `evidence_chunks` table with a `vector(1536)` embedding column. Migration 005 creates the `action_drafts` table.
 
 (For Supabase, use the SQL Editor to run each migration file in order.)
 
@@ -102,6 +103,8 @@ Live product evidence extraction runs the open-source `scrapegraphai` Python lib
 - `POST /runs/{run_id}/evidence/search` - Search evidence chunks. Body: `{"query": "...", "limit": 10}`. Uses vector similarity when embeddings exist, otherwise falls back to text search.
 - `POST /runs/{run_id}/analyze` - Generate a persisted GTM risk analysis from stored evidence chunks.
 - `GET /runs/{run_id}/analysis` - Fetch the latest analysis for a run.
+- `POST /runs/{run_id}/actions/generate` - Generate approval-mode action drafts from the latest analysis. Idempotent per analysis.
+- `GET /runs/{run_id}/actions` - Fetch persisted action drafts for the latest analysis of a run.
 
 ## Extraction Flow
 
@@ -152,3 +155,24 @@ After evidence chunks are created, trigger analysis with `POST /runs/{run_id}/an
 **Fallback**: If `OPENAI_API_KEY` is absent or the model call fails, a deterministic rule-based analysis is generated from the chunk content. Labeled `provider: "deterministic_fallback"` in the DB response and clearly shown in the UI. Never silently substituted.
 
 **Workflow events**: `analysis_started`, `analysis_completed`, `analysis_fallback_used`, `analysis_failed`.
+
+## Action Draft Generation
+
+After analysis is complete, call `POST /runs/{run_id}/actions/generate` to produce approval-mode action drafts. No external messages are sent.
+
+**Draft types generated:**
+- `supplier_escalation` — email to supplier/manufacturer flagging high-severity risks
+- `listing_update_brief` — content team brief for listing content fixes
+- `brand_partner_update` — brand partner or agency status email
+- `internal_ops_update` — Slack/Teams-style internal update with urgency level
+- `customer_reply` — review response template (only generated when review_snippet evidence exists)
+- `ops_ticket` — Jira-style engineering/ops remediation ticket (only generated when systemic risks or low listing QA score)
+
+**All drafts:**
+- Have `status: "draft"` — approval required before any action
+- Include `evidence_ids` citing the chunks that support the draft content
+- Are deterministic from the saved analysis — no additional AI calls
+
+**Idempotency**: Calling `POST /runs/{run_id}/actions/generate` multiple times for the same analysis returns the existing drafts without duplicating. If the run is re-analyzed, new drafts are generated for the new analysis.
+
+**Workflow events**: `action_drafts_started`, `action_drafts_created`, `action_drafts_failed`.

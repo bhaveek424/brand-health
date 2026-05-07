@@ -144,6 +144,21 @@ type Analysis = {
   updated_at: string;
 };
 
+type ActionDraft = {
+  id: string;
+  run_id: string;
+  analysis_id?: string;
+  draft_type: string;
+  target_system: string;
+  status: string;
+  title: string;
+  body: string;
+  payload: Record<string, unknown>;
+  evidence_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
 function useBackendHealth() {
   const [status, setStatus] = useState<BackendStatus>("offline");
   useEffect(() => {
@@ -212,6 +227,10 @@ function GtmWorkbenchInner() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string>("");
+  const [drafts, setDrafts] = useState<ActionDraft[]>([]);
+  const [generatingDrafts, setGeneratingDrafts] = useState(false);
+  const [draftsError, setDraftsError] = useState<string>("");
+  const [expandedDraft, setExpandedDraft] = useState<string | null>(null);
 
   const loadRun = useCallback(async (runId: string) => {
     try {
@@ -260,6 +279,39 @@ function GtmWorkbenchInner() {
     }
   }, []);
 
+  const loadDrafts = useCallback(async (runId: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${runId}/actions`);
+      if (!res.ok) return;
+      const data = (await res.json()) as ActionDraft[];
+      setDrafts(data);
+    } catch {
+      // ignore; drafts may not exist yet
+    }
+  }, []);
+
+  const handleGenerateDrafts = useCallback(async () => {
+    if (!run) return;
+    setGeneratingDrafts(true);
+    setDraftsError("");
+    try {
+      const res = await fetch(`${BACKEND_URL}/runs/${run.id}/actions/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = (await res.json()) as { detail?: string } | ActionDraft[];
+      if (!res.ok) {
+        throw new Error((data as { detail?: string }).detail || `Error ${res.status}`);
+      }
+      setDrafts(data as ActionDraft[]);
+      await loadRun(run.id);
+    } catch (err) {
+      setDraftsError(err instanceof Error ? err.message : "Draft generation failed");
+    } finally {
+      setGeneratingDrafts(false);
+    }
+  }, [run, loadRun]);
+
   const handleAnalyze = useCallback(async () => {
     if (!run) return;
     setAnalyzing(true);
@@ -274,6 +326,8 @@ function GtmWorkbenchInner() {
         throw new Error(data.detail || `Error ${res.status}`);
       }
       setAnalysis(data as Analysis);
+      setDrafts([]);
+      setExpandedDraft(null);
       await loadRun(run.id);
     } catch (err) {
       setAnalyzeError(err instanceof Error ? err.message : "Analysis failed");
@@ -310,9 +364,10 @@ function GtmWorkbenchInner() {
         await loadEvidence(r.id);
         await loadChunks(r.id);
         await loadAnalysis(r.id);
+        await loadDrafts(r.id);
       }
     })();
-  }, [loadRun, loadEvidence, loadChunks, loadAnalysis]);
+  }, [loadRun, loadEvidence, loadChunks, loadAnalysis, loadDrafts]);
 
   const canRun =
     backendStatus === "connected" && productUrl.trim().length > 0;
@@ -333,6 +388,16 @@ function GtmWorkbenchInner() {
       }
       const created = data as Run;
       setRun(created);
+      setEvidence(null);
+      setChunks([]);
+      setSearchResults(null);
+      setSearchQuery("");
+      setAnalysis(null);
+      setDrafts([]);
+      setExpandedDraft(null);
+      setExtractError("");
+      setAnalyzeError("");
+      setDraftsError("");
       setRunIdInUrl(created.id, router);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Run creation failed");
@@ -423,6 +488,19 @@ function GtmWorkbenchInner() {
                   {analyzing ? "Analyzing..." : "Analyze GTM Risk"}
                 </button>
               )}
+              {analysis && (
+                <button
+                  onClick={() => void handleGenerateDrafts()}
+                  disabled={generatingDrafts}
+                  className={`px-4 py-2 text-sm font-medium text-white rounded ${
+                    !generatingDrafts
+                      ? "bg-teal-600 hover:bg-teal-500"
+                      : "bg-slate-400 opacity-60 cursor-not-allowed"
+                  }`}
+                >
+                  {generatingDrafts ? "Generating..." : "Generate Action Drafts"}
+                </button>
+              )}
               <Badge variant="info">AI GTM Copilot</Badge>
               {backendBadge}
             </CardBody>
@@ -441,6 +519,11 @@ function GtmWorkbenchInner() {
           {analyzeError && (
             <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
               {analyzeError}
+            </div>
+          )}
+          {draftsError && (
+            <div className="rounded border border-teal-200 bg-teal-50 px-3 py-2 text-sm text-teal-700">
+              {draftsError}
             </div>
           )}
 
@@ -905,6 +988,101 @@ function GtmWorkbenchInner() {
                 </Card>
               )}
             </>
+          )}
+
+          {/* Action Drafts */}
+          {drafts.length > 0 && (
+            <Card className="border-l-4 border-l-teal-500">
+              <CardHeader
+                title={`Action Drafts (${drafts.length})`}
+                subtitle="Approval-mode operational handoffs — not sent"
+              />
+              <CardBody>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="rounded border border-teal-300 bg-teal-50 px-2 py-0.5 text-xs font-semibold text-teal-700">
+                    Draft only
+                  </span>
+                  <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                    Approval required
+                  </span>
+                  <span className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                    Not sent
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {drafts.map((draft) => {
+                    const isExpanded = expandedDraft === draft.id;
+                    const typeLabel = draft.draft_type.replace(/_/g, " ");
+                    const targetLabel = draft.target_system.replace(/_/g, " ");
+                    return (
+                      <div
+                        key={draft.id}
+                        className="border border-slate-200 rounded bg-white overflow-hidden"
+                      >
+                        {/* Draft header */}
+                        <button
+                          onClick={() => setExpandedDraft(isExpanded ? null : draft.id)}
+                          className="w-full text-left px-3 py-2.5 flex items-start gap-3 hover:bg-slate-50 transition-colors"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                              <span className="text-xs font-medium bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded capitalize">
+                                {typeLabel}
+                              </span>
+                              <span className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded capitalize">
+                                {targetLabel}
+                              </span>
+                              <span className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                {draft.status}
+                              </span>
+                            </div>
+                            <div className="text-sm font-medium text-slate-800 mt-0.5">{draft.title}</div>
+                          </div>
+                          <span className="shrink-0 text-slate-400 text-xs mt-0.5">
+                            {isExpanded ? "▲ hide" : "▼ show"}
+                          </span>
+                        </button>
+
+                        {/* Draft body (expanded) */}
+                        {isExpanded && (
+                          <div className="border-t border-slate-100 px-3 py-3 space-y-3">
+                            <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-slate-50 rounded p-3 max-h-72 overflow-y-auto">
+                              {draft.body}
+                            </pre>
+                            {draft.evidence_ids.length > 0 && (
+                              <div>
+                                <div className="text-xs text-slate-500 font-medium mb-1">
+                                  Cited evidence ({draft.evidence_ids.length})
+                                </div>
+                                <div className="flex flex-wrap gap-1">
+                                  {draft.evidence_ids.map((eid) => (
+                                    <span
+                                      key={eid}
+                                      className="font-mono text-xs bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded"
+                                    >
+                                      {eid.slice(0, 8)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                              <span className="text-xs text-slate-400">
+                                ID: {draft.id.slice(0, 8)}
+                              </span>
+                              <span className="text-xs text-slate-300">·</span>
+                              <span className="text-xs font-semibold text-amber-600">
+                                Requires approval before any action
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardBody>
+            </Card>
           )}
 
           {/* Placeholder grid — shown when no analysis yet */}

@@ -12,7 +12,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import engine, AsyncSessionLocal, DATABASE_URL
-from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk, Analysis
+from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk, Analysis, ActionDraft
 from schemas import (
     CreateRunRequest,
     RunResponse,
@@ -30,11 +30,13 @@ from schemas import (
     ListingFinding,
     RecommendedAction,
     AnalysisCitation,
+    ActionDraftResponse,
 )
 from services.scrapegraph import ScrapeGraphService
 from services.chunking import build_chunks
 from services.embeddings import generate_embeddings_batch, EMBEDDING_DIM
 from services.analyzer import analyze_chunks
+from services.action_drafts import generate_drafts
 
 logger = logging.getLogger(__name__)
 
@@ -747,3 +749,160 @@ async def get_analysis(
         return None
 
     return _build_analysis_response(analysis)
+
+
+def _build_draft_response(d: ActionDraft) -> ActionDraftResponse:
+    return ActionDraftResponse(
+        id=d.id,
+        run_id=d.run_id,
+        analysis_id=d.analysis_id,
+        draft_type=d.draft_type,
+        target_system=d.target_system,
+        status=d.status,
+        title=d.title,
+        body=d.body,
+        payload=d.payload or {},
+        evidence_ids=d.evidence_ids or [],
+        created_at=d.created_at,
+        updated_at=d.updated_at,
+    )
+
+
+@app.post("/runs/{run_id}/actions/generate", response_model=List[ActionDraftResponse])
+async def generate_action_drafts(
+    run_id: str, db: AsyncSession = Depends(get_db)
+) -> List[ActionDraftResponse]:
+    """
+    Generate approval-mode action drafts from the latest completed analysis.
+
+    Idempotent per analysis: if drafts already exist for the latest analysis,
+    return them without regenerating.  If the analysis changes (re-analyze),
+    new drafts are generated for the new analysis and previous drafts remain
+    in the DB but are no longer returned by GET /runs/{run_id}/actions.
+    """
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run id format.")
+
+    result = await db.execute(select(Run).where(Run.id == run_uuid))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    # Load latest analysis
+    analysis_result = await db.execute(
+        select(Analysis)
+        .where(Analysis.run_id == run_uuid)
+        .order_by(Analysis.created_at.desc())
+        .limit(1)
+    )
+    analysis = analysis_result.scalar_one_or_none()
+    if analysis is None:
+        raise HTTPException(
+            status_code=422,
+            detail="No analysis found for this run. Run POST /runs/{run_id}/analyze first.",
+        )
+
+    # Idempotent: return existing drafts if already generated for this analysis
+    existing_result = await db.execute(
+        select(ActionDraft)
+        .where(ActionDraft.run_id == run_uuid)
+        .where(ActionDraft.analysis_id == analysis.id)
+        .order_by(ActionDraft.created_at.asc())
+    )
+    existing = existing_result.scalars().all()
+    if existing:
+        return [_build_draft_response(d) for d in existing]
+
+    db.add(RunEvent(
+        run_id=run.id,
+        event_type="action_drafts_started",
+        payload={"analysis_id": str(analysis.id)},
+        created_at=now_utc(),
+    ))
+    await db.commit()
+
+    try:
+        ar = {
+            "health_score": analysis.health_score,
+            "top_risks": analysis.top_risks or [],
+            "issue_themes": analysis.issue_themes or [],
+            "listing_quality": analysis.listing_quality or {"score": 0, "findings": []},
+            "recommended_actions": analysis.recommended_actions or [],
+            "citations": analysis.citations or [],
+        }
+        draft_dicts = generate_drafts(ar, analysis_id=str(analysis.id))
+    except Exception as exc:
+        logger.error("generate_drafts failed for run %s: %s", run_id, exc)
+        db.add(RunEvent(
+            run_id=run.id,
+            event_type="action_drafts_failed",
+            payload={"error": str(exc)},
+            created_at=now_utc(),
+        ))
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Draft generation failed.")
+
+    drafts: list[ActionDraft] = []
+    for d in draft_dicts:
+        draft = ActionDraft(
+            run_id=run.id,
+            analysis_id=analysis.id,
+            draft_type=d["draft_type"],
+            target_system=d["target_system"],
+            status=d["status"],
+            title=d["title"],
+            body=d["body"],
+            payload=d["payload"],
+            evidence_ids=d["evidence_ids"],
+            created_at=now_utc(),
+            updated_at=now_utc(),
+        )
+        db.add(draft)
+        drafts.append(draft)
+
+    db.add(RunEvent(
+        run_id=run.id,
+        event_type="action_drafts_created",
+        payload={
+            "analysis_id": str(analysis.id),
+            "draft_count": len(drafts),
+            "draft_types": [d.draft_type for d in drafts],
+        },
+        created_at=now_utc(),
+    ))
+    await db.commit()
+
+    return [_build_draft_response(d) for d in drafts]
+
+
+@app.get("/runs/{run_id}/actions", response_model=List[ActionDraftResponse])
+async def get_action_drafts(
+    run_id: str, db: AsyncSession = Depends(get_db)
+) -> List[ActionDraftResponse]:
+    """Return drafts for the latest analysis of this run, ordered by creation time."""
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run id format.")
+
+    # Find latest analysis id for this run
+    analysis_result = await db.execute(
+        select(Analysis.id)
+        .where(Analysis.run_id == run_uuid)
+        .order_by(Analysis.created_at.desc())
+        .limit(1)
+    )
+    analysis_id = analysis_result.scalar_one_or_none()
+    if analysis_id is None:
+        return []
+
+    drafts_result = await db.execute(
+        select(ActionDraft)
+        .where(ActionDraft.run_id == run_uuid)
+        .where(ActionDraft.analysis_id == analysis_id)
+        .order_by(ActionDraft.created_at.asc())
+    )
+    drafts = drafts_result.scalars().all()
+    return [_build_draft_response(d) for d in drafts]
