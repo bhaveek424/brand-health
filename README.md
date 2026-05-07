@@ -73,10 +73,28 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+Run the backend:
+
+```bash
 uvicorn main:app --reload --port 8000
 ```
 
-The backend exposes a health endpoint at `http://localhost:8000/health`.
+The backend requires Postgres (with pgvector) for run persistence. Quick local option:
+
+```bash
+cd backend
+docker compose up -d
+psql postgresql://gtmcopilot:gtmcopilot@localhost:5432/gtmcopilot -f migrations/001_initial_schema.sql
+```
+
+For full backend setup details, see `backend/README.md`.
+
+The backend exposes:
+- `GET /health`
+- `POST /runs`
+- `GET /runs/{run_id}`
 
 ## Useful Routes
 
