@@ -159,6 +159,26 @@ type ActionDraft = {
   updated_at: string;
 };
 
+type SimulatedSendPreview = {
+  target_system: string;
+  payload: Record<string, unknown>;
+  message: string;
+};
+
+type ActionTransitionResponse = {
+  action: ActionDraft;
+  audit: {
+    id: string;
+    event_type: string;
+    from_status: string;
+    to_status: string;
+    target_system: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+  };
+  simulated_send: SimulatedSendPreview | null;
+};
+
 function useBackendHealth() {
   const [status, setStatus] = useState<BackendStatus>("offline");
   useEffect(() => {
@@ -231,6 +251,10 @@ function GtmWorkbenchInner() {
   const [generatingDrafts, setGeneratingDrafts] = useState(false);
   const [draftsError, setDraftsError] = useState<string>("");
   const [expandedDraft, setExpandedDraft] = useState<string | null>(null);
+  // Per-draft transition state keyed by draft id
+  const [draftPending, setDraftPending] = useState<Record<string, boolean>>({});
+  const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
+  const [simulatedPreviews, setSimulatedPreviews] = useState<Record<string, SimulatedSendPreview>>({});
 
   const loadRun = useCallback(async (runId: string) => {
     try {
@@ -312,6 +336,53 @@ function GtmWorkbenchInner() {
     }
   }, [run, loadRun]);
 
+  const handleApproveDraft = useCallback(async (draftId: string) => {
+    setDraftPending((p) => ({ ...p, [draftId]: true }));
+    setDraftErrors((e) => ({ ...e, [draftId]: "" }));
+    try {
+      const res = await fetch(`${BACKEND_URL}/actions/${draftId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = (await res.json()) as { detail?: string } | ActionTransitionResponse;
+      if (!res.ok) {
+        throw new Error((data as { detail?: string }).detail || `Error ${res.status}`);
+      }
+      const t = data as ActionTransitionResponse;
+      setDrafts((prev) => prev.map((d) => (d.id === draftId ? t.action : d)));
+    } catch (err) {
+      setDraftErrors((e) => ({ ...e, [draftId]: err instanceof Error ? err.message : "Approval failed" }));
+    } finally {
+      setDraftPending((p) => ({ ...p, [draftId]: false }));
+    }
+  }, []);
+
+  const handleSimulateSend = useCallback(async (draftId: string) => {
+    setDraftPending((p) => ({ ...p, [draftId]: true }));
+    setDraftErrors((e) => ({ ...e, [draftId]: "" }));
+    try {
+      const res = await fetch(`${BACKEND_URL}/actions/${draftId}/simulate-send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = (await res.json()) as { detail?: string } | ActionTransitionResponse;
+      if (!res.ok) {
+        throw new Error((data as { detail?: string }).detail || `Error ${res.status}`);
+      }
+      const t = data as ActionTransitionResponse;
+      setDrafts((prev) => prev.map((d) => (d.id === draftId ? t.action : d)));
+      if (t.simulated_send) {
+        setSimulatedPreviews((p) => ({ ...p, [draftId]: t.simulated_send! }));
+      }
+      // Auto-expand to show preview
+      setExpandedDraft(draftId);
+    } catch (err) {
+      setDraftErrors((e) => ({ ...e, [draftId]: err instanceof Error ? err.message : "Simulate send failed" }));
+    } finally {
+      setDraftPending((p) => ({ ...p, [draftId]: false }));
+    }
+  }, []);
+
   const handleAnalyze = useCallback(async () => {
     if (!run) return;
     setAnalyzing(true);
@@ -328,6 +399,9 @@ function GtmWorkbenchInner() {
       setAnalysis(data as Analysis);
       setDrafts([]);
       setExpandedDraft(null);
+      setDraftPending({});
+      setDraftErrors({});
+      setSimulatedPreviews({});
       await loadRun(run.id);
     } catch (err) {
       setAnalyzeError(err instanceof Error ? err.message : "Analysis failed");
@@ -395,6 +469,9 @@ function GtmWorkbenchInner() {
       setAnalysis(null);
       setDrafts([]);
       setExpandedDraft(null);
+      setDraftPending({});
+      setDraftErrors({});
+      setSimulatedPreviews({});
       setExtractError("");
       setAnalyzeError("");
       setDraftsError("");
@@ -1014,6 +1091,32 @@ function GtmWorkbenchInner() {
                     const isExpanded = expandedDraft === draft.id;
                     const typeLabel = draft.draft_type.replace(/_/g, " ");
                     const targetLabel = draft.target_system.replace(/_/g, " ");
+                    const isPending = !!draftPending[draft.id];
+                    const draftError = draftErrors[draft.id] ?? "";
+                    const simPreview = simulatedPreviews[draft.id] ?? null;
+
+                    const statusBadge = (() => {
+                      if (draft.status === "simulated_sent") {
+                        return (
+                          <span className="text-xs font-semibold text-green-700 bg-green-50 border border-green-300 px-1.5 py-0.5 rounded">
+                            simulated sent
+                          </span>
+                        );
+                      }
+                      if (draft.status === "approved") {
+                        return (
+                          <span className="text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-300 px-1.5 py-0.5 rounded">
+                            approved
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                          draft
+                        </span>
+                      );
+                    })();
+
                     return (
                       <div
                         key={draft.id}
@@ -1032,9 +1135,7 @@ function GtmWorkbenchInner() {
                               <span className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded capitalize">
                                 {targetLabel}
                               </span>
-                              <span className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                                {draft.status}
-                              </span>
+                              {statusBadge}
                             </div>
                             <div className="text-sm font-medium text-slate-800 mt-0.5">{draft.title}</div>
                           </div>
@@ -1043,12 +1144,73 @@ function GtmWorkbenchInner() {
                           </span>
                         </button>
 
+                        {/* Action buttons row */}
+                        <div className="px-3 pb-2.5 flex items-center gap-2 flex-wrap">
+                          {draft.status === "draft" && (
+                            <button
+                              onClick={() => void handleApproveDraft(draft.id)}
+                              disabled={isPending}
+                              className={`px-3 py-1 text-xs font-semibold text-white rounded ${
+                                isPending
+                                  ? "bg-slate-400 cursor-not-allowed opacity-60"
+                                  : "bg-blue-600 hover:bg-blue-500"
+                              }`}
+                            >
+                              {isPending ? "Approving…" : "Approve"}
+                            </button>
+                          )}
+                          {draft.status === "approved" && (
+                            <button
+                              onClick={() => void handleSimulateSend(draft.id)}
+                              disabled={isPending}
+                              className={`px-3 py-1 text-xs font-semibold text-white rounded ${
+                                isPending
+                                  ? "bg-slate-400 cursor-not-allowed opacity-60"
+                                  : "bg-teal-600 hover:bg-teal-500"
+                              }`}
+                            >
+                              {isPending ? "Simulating…" : "Simulate Send"}
+                            </button>
+                          )}
+                          {draft.status === "simulated_sent" && (
+                            <span className="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 px-2 py-1 rounded">
+                              ✓ Simulation complete — no connector called
+                            </span>
+                          )}
+                          {draftError && (
+                            <span className="text-xs text-red-600">{draftError}</span>
+                          )}
+                        </div>
+
                         {/* Draft body (expanded) */}
                         {isExpanded && (
                           <div className="border-t border-slate-100 px-3 py-3 space-y-3">
                             <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-slate-50 rounded p-3 max-h-72 overflow-y-auto">
                               {draft.body}
                             </pre>
+
+                            {/* Simulated send preview */}
+                            {simPreview && (
+                              <div className="rounded border border-green-200 bg-green-50 p-3 space-y-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-bold text-green-700 uppercase tracking-wide">
+                                    Simulated Send Preview
+                                  </span>
+                                  <span className="text-xs text-green-600 border border-green-300 rounded px-1.5 py-0.5">
+                                    {simPreview.target_system.replace(/_/g, " ")}
+                                  </span>
+                                </div>
+                                <div className="rounded bg-white border border-green-200 p-2">
+                                  <pre className="text-xs text-slate-600 whitespace-pre-wrap overflow-x-auto">
+                                    {JSON.stringify(simPreview.payload, null, 2)}
+                                  </pre>
+                                </div>
+                                <div className="text-xs font-semibold text-green-700">
+                                  {simPreview.message}
+                                </div>
+                              </div>
+                            )}
+
                             {draft.evidence_ids.length > 0 && (
                               <div>
                                 <div className="text-xs text-slate-500 font-medium mb-1">
@@ -1071,9 +1233,21 @@ function GtmWorkbenchInner() {
                                 ID: {draft.id.slice(0, 8)}
                               </span>
                               <span className="text-xs text-slate-300">·</span>
-                              <span className="text-xs font-semibold text-amber-600">
-                                Requires approval before any action
-                              </span>
+                              {draft.status === "draft" && (
+                                <span className="text-xs font-semibold text-amber-600">
+                                  Requires approval before any action
+                                </span>
+                              )}
+                              {draft.status === "approved" && (
+                                <span className="text-xs font-semibold text-blue-600">
+                                  Approved — ready to simulate send
+                                </span>
+                              )}
+                              {draft.status === "simulated_sent" && (
+                                <span className="text-xs font-semibold text-green-600">
+                                  Simulation only — no external connector called
+                                </span>
+                              )}
                             </div>
                           </div>
                         )}

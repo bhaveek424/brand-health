@@ -125,6 +125,32 @@ class EvidenceChunk(Base):
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
 
+class ActionAuditLog(Base):
+    """Immutable audit record for each action draft status transition."""
+
+    __tablename__ = "action_audit_log"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    action_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("action_drafts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type = Column(String, nullable=False)
+    from_status = Column(String, nullable=False)
+    to_status = Column(String, nullable=False)
+    target_system = Column(String, nullable=False)
+    payload = Column(JSONB, default=dict)
+    created_at = Column(DateTime(timezone=True), default=now_utc)
+
+
 class ActionDraft(Base):
     """Approval-mode action draft generated from a GTM risk analysis. Never sent automatically."""
 

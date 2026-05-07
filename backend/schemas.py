@@ -176,3 +176,29 @@ class ActionDraftResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ActionAuditLogResponse(BaseModel):
+    id: UUID
+    action_id: UUID
+    run_id: UUID
+    event_type: str
+    from_status: str
+    to_status: str
+    target_system: str
+    payload: dict = Field(default_factory=dict)
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SimulatedSendPreview(BaseModel):
+    target_system: str
+    payload: dict = Field(default_factory=dict)
+    message: str = "Simulated only. No external message was sent."
+
+
+class ActionTransitionResponse(BaseModel):
+    action: ActionDraftResponse
+    audit: ActionAuditLogResponse
+    simulated_send: Optional[SimulatedSendPreview] = None

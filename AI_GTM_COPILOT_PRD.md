@@ -69,6 +69,8 @@ FastAPI endpoints:
 - `GET /runs/{run_id}/analysis`
 - `POST /runs/{run_id}/actions/generate`
 - `GET /runs/{run_id}/actions`
+- `POST /actions/{action_id}/approve`
+- `POST /actions/{action_id}/simulate-send`
 
 Persistence:
 
@@ -79,6 +81,7 @@ Persistence:
 - `evidence_chunks` (pgvector, 1536-dim embeddings via OpenAI text-embedding-3-small)
 - `analyses` (GTM risk analysis: health score, risks, themes, listing QA, actions, citations)
 - `action_drafts` (approval-mode drafts: type, target system, title, body, payload, evidence IDs)
+- `action_audit_log` (immutable audit trail: event_type, from_status, to_status, target_system, payload)
 
 ## Environment
 
@@ -104,6 +107,10 @@ OLLAMA_BASE_URL=http://localhost:11434
 - Action drafts.
 - Real email, Slack, ticket, or marketplace reply connectors.
 - Hosted ScrapeGraphAI Cloud integration.
+
+## Completed: Issue 018 - Approve and Simulate Action Handoff
+
+Issue 018 adds status transitions and an immutable audit trail to the action draft layer. `POST /actions/{action_id}/approve` transitions `draft → approved`, writes an `action_audit_log` row, and emits `action_approved`. `POST /actions/{action_id}/simulate-send` transitions `approved → simulated_sent`, writes another audit row, emits `action_simulated_sent`, and returns a `SimulatedSendPreview` with target_system, payload snapshot, and the message "Simulated only. No external message was sent." — no real connector is called. Invalid transitions (e.g. approving a non-draft, simulating before approval) return 409 with a descriptive message. The `/gtm-workbench` UI renders per-draft Approve / Simulate Send buttons that update status immediately from backend response, shows the simulated send preview in the expanded card, and uses status-specific badges (draft/approved/simulated sent).
 
 ## Completed: Issue 017 - Approval-Mode Action Drafts
 

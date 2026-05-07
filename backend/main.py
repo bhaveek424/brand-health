@@ -12,7 +12,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import engine, AsyncSessionLocal, DATABASE_URL
-from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk, Analysis, ActionDraft
+from models import Base, Product, Run, RunEvent, ExtractionRun, EvidenceChunk, Analysis, ActionDraft, ActionAuditLog
 from schemas import (
     CreateRunRequest,
     RunResponse,
@@ -31,6 +31,9 @@ from schemas import (
     RecommendedAction,
     AnalysisCitation,
     ActionDraftResponse,
+    ActionAuditLogResponse,
+    ActionTransitionResponse,
+    SimulatedSendPreview,
 )
 from services.scrapegraph import ScrapeGraphService
 from services.chunking import build_chunks
@@ -906,3 +909,153 @@ async def get_action_drafts(
     )
     drafts = drafts_result.scalars().all()
     return [_build_draft_response(d) for d in drafts]
+
+
+def _build_audit_response(a: ActionAuditLog) -> ActionAuditLogResponse:
+    return ActionAuditLogResponse(
+        id=a.id,
+        action_id=a.action_id,
+        run_id=a.run_id,
+        event_type=a.event_type,
+        from_status=a.from_status,
+        to_status=a.to_status,
+        target_system=a.target_system,
+        payload=a.payload or {},
+        created_at=a.created_at,
+    )
+
+
+async def _load_draft(action_id: str, db: AsyncSession) -> ActionDraft:
+    try:
+        action_uuid = uuid.UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid action id format.")
+    result = await db.execute(select(ActionDraft).where(ActionDraft.id == action_uuid))
+    draft = result.scalar_one_or_none()
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Action draft not found.")
+    return draft
+
+
+@app.post("/actions/{action_id}/approve", response_model=ActionTransitionResponse)
+async def approve_action(
+    action_id: str, db: AsyncSession = Depends(get_db)
+) -> ActionTransitionResponse:
+    """
+    Transition an action draft from draft → approved.
+    Invalid if already approved or simulated_sent (409).
+    """
+    draft = await _load_draft(action_id, db)
+
+    if draft.status != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot approve action in status '{draft.status}'. Only 'draft' actions can be approved.",
+        )
+
+    from_status = draft.status
+    draft.status = "approved"
+    draft.updated_at = now_utc()
+
+    audit = ActionAuditLog(
+        action_id=draft.id,
+        run_id=draft.run_id,
+        event_type="action_approved",
+        from_status=from_status,
+        to_status="approved",
+        target_system=draft.target_system,
+        payload={"draft_type": draft.draft_type, "title": draft.title},
+        created_at=now_utc(),
+    )
+    db.add(audit)
+
+    db.add(RunEvent(
+        run_id=draft.run_id,
+        event_type="action_approved",
+        payload={"action_id": str(draft.id), "draft_type": draft.draft_type, "target_system": draft.target_system},
+        created_at=now_utc(),
+    ))
+
+    await db.commit()
+    await db.refresh(draft)
+    await db.refresh(audit)
+
+    return ActionTransitionResponse(
+        action=_build_draft_response(draft),
+        audit=_build_audit_response(audit),
+        simulated_send=None,
+    )
+
+
+@app.post("/actions/{action_id}/simulate-send", response_model=ActionTransitionResponse)
+async def simulate_send_action(
+    action_id: str, db: AsyncSession = Depends(get_db)
+) -> ActionTransitionResponse:
+    """
+    Transition an action draft from approved → simulated_sent.
+    Simulates delivery to target_system with no real connector call.
+    Invalid if still draft (must approve first) or already simulated_sent (409).
+    """
+    draft = await _load_draft(action_id, db)
+
+    if draft.status == "draft":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot simulate send: action is still in 'draft' status. Approve it first.",
+        )
+    if draft.status == "simulated_sent":
+        raise HTTPException(
+            status_code=409,
+            detail="Action has already been simulated sent.",
+        )
+    if draft.status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot simulate send action in status '{draft.status}'. Expected 'approved'.",
+        )
+
+    from_status = draft.status
+    draft.status = "simulated_sent"
+    draft.updated_at = now_utc()
+
+    sim_payload = {
+        **(draft.payload or {}),
+        "simulated": True,
+        "target_system": draft.target_system,
+        "draft_type": draft.draft_type,
+        "title": draft.title,
+        "body_preview": draft.body[:200],
+    }
+
+    audit = ActionAuditLog(
+        action_id=draft.id,
+        run_id=draft.run_id,
+        event_type="action_simulated_sent",
+        from_status=from_status,
+        to_status="simulated_sent",
+        target_system=draft.target_system,
+        payload=sim_payload,
+        created_at=now_utc(),
+    )
+    db.add(audit)
+
+    db.add(RunEvent(
+        run_id=draft.run_id,
+        event_type="action_simulated_sent",
+        payload={"action_id": str(draft.id), "draft_type": draft.draft_type, "target_system": draft.target_system},
+        created_at=now_utc(),
+    ))
+
+    await db.commit()
+    await db.refresh(draft)
+    await db.refresh(audit)
+
+    return ActionTransitionResponse(
+        action=_build_draft_response(draft),
+        audit=_build_audit_response(audit),
+        simulated_send=SimulatedSendPreview(
+            target_system=draft.target_system,
+            payload=sim_payload,
+            message="Simulated only. No external message was sent.",
+        ),
+    )

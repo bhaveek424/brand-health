@@ -70,9 +70,10 @@ psql $DATABASE_URL -f migrations/002_add_extraction_runs.sql
 psql $DATABASE_URL -f migrations/003_add_evidence_chunks.sql
 psql $DATABASE_URL -f migrations/004_add_analyses.sql
 psql $DATABASE_URL -f migrations/005_add_action_drafts.sql
+psql $DATABASE_URL -f migrations/006_add_action_audit_log.sql
 ```
 
-Migration 001 enables the `vector` pgvector extension. Migration 003 creates the `evidence_chunks` table with a `vector(1536)` embedding column. Migration 005 creates the `action_drafts` table.
+Migration 001 enables the `vector` pgvector extension. Migration 003 creates the `evidence_chunks` table with a `vector(1536)` embedding column. Migration 005 creates the `action_drafts` table. Migration 006 creates the `action_audit_log` table.
 
 (For Supabase, use the SQL Editor to run each migration file in order.)
 
@@ -105,6 +106,8 @@ Live product evidence extraction runs the open-source `scrapegraphai` Python lib
 - `GET /runs/{run_id}/analysis` - Fetch the latest analysis for a run.
 - `POST /runs/{run_id}/actions/generate` - Generate approval-mode action drafts from the latest analysis. Idempotent per analysis.
 - `GET /runs/{run_id}/actions` - Fetch persisted action drafts for the latest analysis of a run.
+- `POST /actions/{action_id}/approve` - Approve a draft (draft → approved). Persists audit log row and emits `action_approved` event. Returns `ActionTransitionResponse`.
+- `POST /actions/{action_id}/simulate-send` - Simulate send (approved → simulated_sent). No external connector. Persists audit log, emits `action_simulated_sent`, returns `ActionTransitionResponse` with `simulated_send` preview. Invalid transitions return 409.
 
 ## Extraction Flow
 
@@ -176,3 +179,14 @@ After analysis is complete, call `POST /runs/{run_id}/actions/generate` to produ
 **Idempotency**: Calling `POST /runs/{run_id}/actions/generate` multiple times for the same analysis returns the existing drafts without duplicating. If the run is re-analyzed, new drafts are generated for the new analysis.
 
 **Workflow events**: `action_drafts_started`, `action_drafts_created`, `action_drafts_failed`.
+
+## Action Status Transitions
+
+```
+draft → approved → simulated_sent
+```
+
+- `POST /actions/{action_id}/approve`: `draft` → `approved`. 409 if not in `draft`.
+- `POST /actions/{action_id}/simulate-send`: `approved` → `simulated_sent`. 409 if in `draft` (must approve first) or already `simulated_sent`. No external send.
+
+Every transition writes one row to `action_audit_log` with `from_status`, `to_status`, `target_system`, and a payload snapshot. Workflow events `action_approved` and `action_simulated_sent` are emitted on the run's event stream.
